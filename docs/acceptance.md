@@ -8,15 +8,16 @@ repository; the accepted ticket-01 source is
 
 ## Automated evidence — PASS, 2026-09-13
 
-Typechecking and all 14 PostgreSQL/HTTPS tests passed. The final real-agent stand
-also passed; its committed, sanitized [machine-readable evidence](stand-results.json)
+Typechecking and all 17 PostgreSQL/HTTPS tests passed after extracting Commercial
+Access, Nodes and Configuration Delivery into modules. The final real-agent stand
+also passed; its saved, sanitized [machine-readable evidence](stand-results.json)
 records Node.js 24.11.0, PostgreSQL 15.19, agent source
 `29ac4bde5a30709be92905cac38c7c4974604e3c`, Xray 26.5.9 and the tested Control Plane
-source digest. Local contract tests used PostgreSQL 18.3. Fault fixtures are set up
+source digest, including nested module files. Local contract tests used PostgreSQL 18.3. Fault fixtures are set up
 by the test DBA, not exposed in production routes.
 
-The final stand issued at `2026-09-13T07:37:15.127Z` and accepted the first ACK at
-`2026-09-13T07:37:30.563Z`. It proved a successful HTTPS request through a real Xray
+The final stand issued at `2026-09-13T17:52:09.211Z` and accepted the first ACK at
+`2026-09-13T17:52:24.676Z`. It proved a successful HTTPS request through a real Xray
 client configured from the returned URI, and repeated confirmation without a second
 live Xray account. This is local-container egress, not the physical Happ/VPS check.
 
@@ -31,6 +32,7 @@ live Xray account. This is local-container egress, not the physical Happ/VPS che
 | Bearer ownership/rotation and canonical secret input | Real HTTPS requests, old token and verifier-as-token rejected |
 | Every ACK status and loss/staleness/conflict | ACK provenance checked before send; confirmation/time remain stable |
 | JCS content validation | Golden hash from Rust agent's test, reversed users, corrupt stored hash |
+| Module interfaces | Direct use cases for issuance, ACK rollback at COMMIT, token rotation, historical readiness and encoded configuration delivery |
 | Real Rust agent and pinned Xray | `sh stand/run.sh ../node-agent`, sanitized result in `target/stand-results.json` |
 
 The log scan included malformed HTTPS input and deliberate database uniqueness
@@ -38,8 +40,9 @@ errors for VLESS UUID, raw link-secret bytes, and the Node verifier. It searched
 application/agent/Xray journals and PostgreSQL logs for the disposable values,
 including bytea hex encodings, full links and Basic credentials. No matches occurred.
 The stand also verified private active database/WAL directories and zero soft/hard
-core limits in the running services. [Independent review](code-review.md) has no
-remaining findings; its initial concurrency-test gap was fixed before the full suite.
+core limits in the running services. [Independent review](code-review.md) records
+the original ticket-02 implementation review. The module extraction was validated
+by the updated tests and real-agent stand above.
 
 The server's expiration predicate is already strict at `t = ends_at`; the HTTP
 denial is exercised with prepared expired data. An independent SQL-boundary check

@@ -175,7 +175,7 @@ def main():
         import re
         check(re.search(r'Max core file size\s+0\s+0\s+', limits), 'core_limit')
     source = hashlib.sha256()
-    for file in sorted([*Path('/opt/uhuru/src').glob('*.ts'), Path('/opt/uhuru/schema.sql'), Path('/opt/uhuru/package-lock.json')]):
+    for file in sorted([*Path('/opt/uhuru/src').rglob('*.ts'), Path('/opt/uhuru/schema.sql'), Path('/opt/uhuru/package-lock.json')]):
         source.update(str(file.relative_to('/opt/uhuru')).encode() + b'\0' + file.read_bytes() + b'\0')
     result = dict(status='PASS', agent_source=sys.argv[1], control_plane_source_sha256=source.hexdigest(),
         xray=command([XRAY, 'version']).stdout.decode().splitlines()[0],

@@ -6,6 +6,9 @@ import { execFileSync } from 'node:child_process';
 import https from 'node:https';
 import pg from 'pg';
 import { buildApp } from '../src/app.ts';
+import * as access from '../src/access/use-cases.ts';
+import * as nodes from '../src/nodes/use-cases.ts';
+import { getConfigurations } from '../src/delivery/use-cases.ts';
 
 const db = new pg.Pool({ host: process.env.TEST_DATABASE_SOCKET, user: 'postgres', database: 'postgres' });
 const pool = new pg.Pool({ host: process.env.TEST_DATABASE_SOCKET, user: 'uhuru', database: 'postgres' });
@@ -54,6 +57,26 @@ before(async () => {
 });
 beforeEach(async () => { await db.query('TRUNCATE users, access_profiles, subscriptions, nodes, node_sync'); });
 after(async () => { await app?.close(); await pool.end(); await db.end(); });
+
+test('commercial use cases own issuance and their controllers retain validation and authentication', async () => {
+  const node = await registerNode();
+  const user = await access.createUser(pool, 'Direct use case');
+  for (const [method, path] of [
+    ['POST', '/admin/users'], ['GET', '/admin/users'], ['GET', '/admin/plan'],
+    ['POST', `/admin/users/${user.id}/first-profile`], ['GET', `/admin/users/${user.id}/profiles`],
+    ['POST', `/admin/profiles/${randomUUID()}/link`],
+  ]) assert.equal((await request(method, path, undefined, null)).status, 401);
+  assert.equal((await request('POST', '/admin/users', { label: '   ' })).status, 400);
+  assert.equal((await request('POST', '/admin/users/not-a-uuid/first-profile')).status, 400);
+  const first = await access.issueFirstProfile(pool, user.id, 'https://localhost');
+  assert.deepEqual(await access.showProfileLink(pool, first.profile_id, 'https://localhost'), first);
+  assert.deepEqual(await access.issueFirstProfile(pool, user.id, 'https://localhost'), first);
+  assert.equal(first.ends_at.getTime() - first.starts_at.getTime(), 2_592_000_000);
+  assert.equal((await access.listProfiles(pool, user.id)).length, 1);
+  assert.equal((await sync(node)).json().desired.revision, '2');
+  await assert.rejects(access.issueFirstProfile(pool, randomUUID(), 'https://localhost'),
+    error => error instanceof access.AccessError && error.reason === 'not_found');
+});
 
 test('a subscription requires a first profile owned by the same user', async () => {
   const owner = randomUUID(), other = randomUUID(), profile = randomUUID();
@@ -134,6 +157,38 @@ test('only a sent and verified snapshot unlocks the profile, with stable first c
   assert.equal(repeated[0].confirmed_at, ready[0].confirmed_at);
   assert.ok(repeated[0].last_seen_at >= ready[0].last_seen_at);
   assert.equal(config.headers['cache-control'], 'no-store');
+});
+
+test('configuration delivery works without HTTP and preserves URI encoding and response headers', async () => {
+  const label = 'Москва #1 / ?';
+  const bearer = randomBytes(32);
+  const node = await nodes.registerNode(pool, label, connection, bearer);
+  const p = await issue();
+  const linkSecret = Buffer.from(p.path.slice('/s/'.length), 'base64url');
+  await assert.rejects(getConfigurations(pool, linkSecret), { message: 'no_ready_nodes' });
+  const report = { node_id: node.id, saved: null, verified: null, error: null };
+  const pending = await nodes.synchronize(pool, bearer, report);
+  await nodes.synchronize(pool, bearer, { ...report, saved: pending.desired, verified: pending.desired });
+  const body = await getConfigurations(pool, linkSecret);
+  const response = await request('GET', p.path, undefined, null);
+  assert.equal(response.status, 200);
+  assert.ok(response.text === body, 'controller must return the use-case result unchanged');
+  assert.equal(response.headers['content-type'], 'text/plain; charset=utf-8');
+  assert.equal(response.headers['cache-control'], 'no-store');
+  assert.equal(response.headers['referrer-policy'], 'no-referrer');
+  const [line, trailing, extra] = body.split('\n');
+  assert.equal(trailing, '');
+  assert.equal(extra, undefined);
+  const uri = new URL(line);
+  assert.equal(uri.protocol, 'vless:');
+  assert.equal(uri.hostname, connection.host);
+  assert.equal(uri.port, String(connection.port));
+  assert.ok(uri.username === pending.snapshot!.users[0].vless_uuid, 'URI must contain the confirmed credential');
+  assert.equal(decodeURIComponent(uri.hash.slice(1)), label);
+  assert.deepEqual(Object.fromEntries(uri.searchParams), { encryption: 'none', type: 'tcp', security: 'reality',
+    flow: 'xtls-rprx-vision', sni: connection.server_name, pbk: connection.public_key, sid: connection.short_id, fp: connection.fingerprint });
+  const escapedPath = '/s/%' + p.path.charCodeAt(3).toString(16) + p.path.slice(4);
+  assert.equal((await request('GET', escapedPath, undefined, null)).status, 404);
 });
 
 test('parallel first issuance and server restart preserve one first profile and term', async () => {
@@ -244,8 +299,49 @@ test('expired and revoked prepared profiles are never renewed or replaced by iss
   assert.equal((await request('GET', p.path, undefined, null)).status, 410);
 });
 
+test('Node use cases roll back a failed ACK commit and keep readiness separate from inclusion and access', async () => {
+  const bearer = randomBytes(32);
+  const node = await nodes.registerNode(pool, 'Direct Node', connection, bearer);
+  const p = await issue();
+  const report = { node_id: node.id, saved: null, verified: null, error: null };
+  const sent = await nodes.synchronize(pool, bearer, report);
+  const ack = { ...report, saved: sent.desired, verified: sent.desired };
+  const before = (await db.query('SELECT * FROM node_sync WHERE node_id=$1', [node.id])).rows[0];
+  await db.query(`CREATE FUNCTION fail_ack() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'injected failure'; END $$;
+    CREATE CONSTRAINT TRIGGER fail_ack AFTER UPDATE ON node_sync
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_ack()`);
+  try { await assert.rejects(nodes.synchronize(pool, bearer, ack), { code: 'P0001' }); }
+  finally { await db.query('DROP TRIGGER fail_ack ON node_sync; DROP FUNCTION fail_ack()'); }
+  const after = (await db.query('SELECT * FROM node_sync WHERE node_id=$1', [node.id])).rows[0];
+  assert.ok(JSON.stringify(after) === JSON.stringify(before), 'failed commit must preserve all sync state');
+  assert.equal((await nodes.synchronize(pool, bearer, ack)).ack_status, 'accepted');
+  const ready = (await nodes.getProfileReadiness(pool, p.first_profile_id))[0];
+  assert.equal(ready.ready, true);
+  const replacement = randomBytes(32);
+  await nodes.rotateBearer(pool, node.id, replacement);
+  await assert.rejects(nodes.synchronize(pool, bearer, ack),
+    error => error instanceof nodes.NodeError && error.reason === 'unauthorized');
+  assert.equal((await nodes.synchronize(pool, replacement, ack)).ack_status, 'already_confirmed');
+  await db.query('UPDATE nodes SET include_in_subscription=false WHERE id=$1', [node.id]);
+  assert.equal((await request('GET', p.path, undefined, null)).status, 503);
+  await db.query("UPDATE subscriptions SET starts_at=clock_timestamp()-interval '721 hours', ends_at=clock_timestamp()-interval '1 hour' WHERE user_id=$1", [p.user.id]);
+  const historical = (await nodes.getProfileReadiness(pool, p.first_profile_id))[0];
+  assert.equal(historical.ready, true);
+  assert.equal(historical.desired_access, false);
+  assert.equal(historical.include_in_subscription, false);
+  assert.deepEqual(historical.confirmed_at, ready.confirmed_at);
+  assert.equal((await request('GET', p.path, undefined, null)).status, 403);
+});
+
 test('node Bearer binds one node and rotates without overlap or resetting access', async () => {
   const node = await registerNode(), other = await registerNode();
+  for (const [method, path] of [
+    ['POST', '/admin/nodes'], ['GET', '/admin/nodes'],
+    ['PUT', `/admin/nodes/${node.id}/bearer`], ['GET', `/admin/profiles/${randomUUID()}/readiness`],
+  ]) assert.equal((await request(method, path, undefined, null)).status, 401);
+  assert.equal((await request('PUT', `/admin/nodes/${node.id}/bearer`, { bearer: node.bearer + '=' })).status, 400);
+  assert.equal((await request('PUT', `/admin/nodes/${randomUUID()}/bearer`, { bearer: randomBytes(32).toString('base64url') })).status, 404);
   const p = await issue();
   const initial = (await sync(node)).json();
   assert.equal((await sync({ ...node, id: other.id })).status, 403);

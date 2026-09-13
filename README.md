@@ -12,6 +12,49 @@ together. Repeating issuance for the same User returns the same first Profile an
 link, including after restart. Expired subscriptions stay expired; revoked first
 Profiles return a status without a link. Price `null` means **not configured**.
 
+## Module structure
+
+The Commercial Access module owns Users, the Plan, Subscriptions and Access Profiles:
+
+- `src/access/controller.ts` is the HTTP adapter: input schemas, normalization, use-case calls and responses. It inherits the administrative authentication hook.
+- `src/access/use-cases.ts` is the module interface: commercial decisions, first issuance and its transaction, repeat link display, and internal access checks for Node enrollment and configuration delivery. It does not depend on Fastify or HTTP errors.
+- `src/access/repository.ts` is the internal PostgreSQL adapter for commercial data. SQL time comparisons preserve PostgreSQL precision; use cases decide commercial statuses, the profile limit and the issued term.
+
+The Node module owns Node registration, Bearer rotation, synchronization and observed readiness:
+
+- `src/nodes/controller.ts` contains the administrative and agent HTTP adapters, input schemas and canonical token decoding. Administrative routes inherit Basic Auth; the agent uses its own Bearer.
+- `src/nodes/use-cases.ts` handles registration and synchronization transactions, Node authentication, ACK decisions and public diagnostics. Domain errors are mapped to HTTP only in `src/app.ts`.
+- `src/nodes/repository.ts` is the PostgreSQL adapter for all reads and writes of `nodes` and `node_sync`.
+- `src/nodes/readiness.ts` checks the confirmed snapshot and exact Profile ID/credential pair once for both administrative readiness and configuration delivery. Historical readiness remains separate from desired access and inclusion in subscriptions.
+
+The Configuration Delivery module serves Subscription Links:
+
+- `src/delivery/controller.ts` validates the canonical secret and raw URL before database access, calls the use case and sets the successful response content type.
+- `src/delivery/use-cases.ts` owns the read transaction, obtains authorized access and ready Node connections through those modules, and formats the VLESS configurations. Data access stays in the owning modules' repositories; delivery has no tables of its own.
+
+Modules call each other's use cases or the desired-access operation, not repositories.
+`src/secrets.ts` shares token decoding and hashing independently of HTTP;
+`src/snapshot.ts` retains canonical snapshot validation and hashing. `src/app.ts`
+assembles the three modules and configures TLS, administrative authentication,
+JSON parsing, response headers and sanitized error handling.
+
+`src/database.ts` provides the shared transaction implementation. First issuance
+locks the User, then the shared enrollment/issuance row, then Nodes in ID order;
+only then does it read PostgreSQL time. `src/nodes/desired-access.ts` locks the Node
+state and returns its update operation on that same database client, hiding snapshot
+details behind an internal seam. Its SQL is in `src/nodes/repository.ts`.
+Repositories never commit independently: Profile, Subscription and desired snapshots
+still commit together. Node enrollment obtains its initial desired access through
+the access module under the same enrollment/issuance lock. Synchronization locks
+the Node before its sync state, validates ACK provenance against the previous sent
+snapshot, then records the new response in that same transaction. It never takes
+a User lock after a Node lock. Repeated ACKs retain the first confirmation time.
+
+See [the domain glossary](CONTEXT.md). The existing HTTPS/PostgreSQL checks remain
+the behavioral test surface, alongside direct use-case checks for issuance and
+ACK rollback at COMMIT, token rotation, historical readiness and configuration
+delivery. Delivery checks also cover URI encoding and response headers.
+
 ## Run the checks
 
 ```sh
