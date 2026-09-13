@@ -1,0 +1,10 @@
+{
+  "origin": "https://control.example.com:8443",
+  "listen_host": "0.0.0.0",
+  "port": 8443,
+  "database_socket": "/var/run/postgresql",
+  "admin_username": "admin",
+  "admin_password": "REPLACE_WITH_A_RANDOM_PASSWORD",
+  "tls_cert": "/etc/uhuru/cert.pem",
+  "tls_key": "/etc/uhuru/key.pem"
+}

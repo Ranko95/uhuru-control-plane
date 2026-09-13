@@ -1,0 +1,26 @@
+[Unit]
+Description=Uhuru Control Plane
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+User=uhuru
+Group=uhuru
+WorkingDirectory=/opt/uhuru
+ExecStart=/usr/local/bin/node /opt/uhuru/src/server.ts /etc/uhuru/settings.json
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
