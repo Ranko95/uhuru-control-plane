@@ -21,19 +21,19 @@ The final stand issued at `2026-09-13T17:52:09.211Z` and accepted the first ACK 
 client configured from the returned URI, and repeated confirmation without a second
 live Xray account. This is local-container egress, not the physical Happ/VPS check.
 
-| Check | Evidence |
-| --- | --- |
-| TypeScript | `npm run typecheck` |
-| Schema ownership, uniqueness, finite term and restricted role | `test/control-plane.test.ts` |
-| First issuance, concurrent retries, lost response and restart | Same HTTPS test file; dropped response bodies are actual closed TLS connections |
-| Atomic rollback | Deferred database trigger fails at COMMIT after all desired updates |
-| Time after User/Node locks; month/DST; exact end | Held PostgreSQL row locks plus SQL boundary fixtures, 2,592,000 seconds |
-| Expired/revoked retry and prepared limit | Existing data retains the same Profile/term; no implicit replacement |
-| Bearer ownership/rotation and canonical secret input | Real HTTPS requests, old token and verifier-as-token rejected |
-| Every ACK status and loss/staleness/conflict | ACK provenance checked before send; confirmation/time remain stable |
-| JCS content validation | Golden hash from Rust agent's test, reversed users, corrupt stored hash |
-| Module interfaces | Direct use cases for issuance, ACK rollback at COMMIT, token rotation, historical readiness and encoded configuration delivery |
-| Real Rust agent and pinned Xray | `sh stand/run.sh ../node-agent`, sanitized result in `target/stand-results.json` |
+| Check                                                         | Evidence                                                                                                                       |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| TypeScript                                                    | `npm run typecheck`                                                                                                            |
+| Schema ownership, uniqueness, finite term and restricted role | `test/control-plane.test.ts`                                                                                                   |
+| First issuance, concurrent retries, lost response and restart | Same HTTPS test file; dropped response bodies are actual closed TLS connections                                                |
+| Atomic rollback                                               | Deferred database trigger fails at COMMIT after all desired updates                                                            |
+| Time after User/Node locks; month/DST; exact end              | Held PostgreSQL row locks plus SQL boundary fixtures, 2,592,000 seconds                                                        |
+| Expired/revoked retry and prepared limit                      | Existing data retains the same Profile/term; no implicit replacement                                                           |
+| Bearer ownership/rotation and canonical secret input          | Real HTTPS requests, old token and verifier-as-token rejected                                                                  |
+| Every ACK status and loss/staleness/conflict                  | ACK provenance checked before send; confirmation/time remain stable                                                            |
+| JCS content validation                                        | Golden hash from Rust agent's test, reversed users, corrupt stored hash                                                        |
+| Module interfaces                                             | Direct use cases for issuance, ACK rollback at COMMIT, token rotation, historical readiness and encoded configuration delivery |
+| Real Rust agent and pinned Xray                               | `sh stand/run.sh ../node-agent`, sanitized result in `target/stand-results.json`                                               |
 
 The log scan included malformed HTTPS input and deliberate database uniqueness
 errors for VLESS UUID, raw link-secret bytes, and the Node verifier. It searched
@@ -60,16 +60,16 @@ The user will perform these checks after implementation; no prepared VPS or phys
 devices were available during development. The transport and MIME remain candidates,
 and neither Q1 nor Q2 is closed by the automated stand.
 
-| Item | Android | iOS |
-| --- | --- | --- |
-| Device model, OS version/build | NOT RUN | NOT RUN |
-| Happ version/build and installation source | NOT RUN | NOT RUN |
+| Item                                             | Android | iOS     |
+| ------------------------------------------------ | ------- | ------- |
+| Device model, OS version/build                   | NOT RUN | NOT RUN |
+| Happ version/build and installation source       | NOT RUN | NOT RUN |
 | Q2-B: import before first ACK, proposed HTTP 503 | NOT RUN | NOT RUN |
-| Q2-A: import after ACK without editing URI | NOT RUN | NOT RUN |
-| Q1-A: control HTTPS resource via VPN | NOT RUN | NOT RUN |
-| Public egress IP equals the Node's IP | NOT RUN | NOT RUN |
-| Unknown secret, proposed HTTP 404 | NOT RUN | NOT RUN |
-| Refresh/retry behavior and existing cache | NOT RUN | NOT RUN |
+| Q2-A: import after ACK without editing URI       | NOT RUN | NOT RUN |
+| Q1-A: control HTTPS resource via VPN             | NOT RUN | NOT RUN |
+| Public egress IP equals the Node's IP            | NOT RUN | NOT RUN |
+| Unknown secret, proposed HTTP 404                | NOT RUN | NOT RUN |
+| Refresh/retry behavior and existing cache        | NOT RUN | NOT RUN |
 
 For the manual run:
 

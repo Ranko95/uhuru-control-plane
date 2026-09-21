@@ -2,7 +2,10 @@ import type { Pool, PoolClient } from 'pg';
 
 export type Database = Pool | PoolClient;
 
-export async function transaction<T>(pool: Pool, work: (db: PoolClient) => Promise<T>): Promise<T> {
+export async function transaction<T>(
+  pool: Pool,
+  work: (db: PoolClient) => Promise<T>,
+): Promise<T> {
   const db = await pool.connect();
   try {
     await db.query('BEGIN');
@@ -13,5 +16,7 @@ export async function transaction<T>(pool: Pool, work: (db: PoolClient) => Promi
   } catch (error) {
     await db.query('ROLLBACK');
     throw error;
-  } finally { db.release(); }
+  } finally {
+    db.release();
+  }
 }

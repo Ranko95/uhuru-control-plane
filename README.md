@@ -143,18 +143,18 @@ Every `/admin` route requires Basic Auth over HTTPS. Create the User first and r
 its ID before issuing. Responses use `Cache-Control: no-store`; all IDs below are
 canonical lowercase UUIDs. There is no browser UI or billing integration.
 
-| Method and path | Body / result |
-| --- | --- |
-| `POST /admin/users` | `{"label":"Alice"}` → `201`, `id`, `label` |
-| `GET /admin/users` | IDs and labels only |
-| `GET /admin/plan` | One setting: 720 hours, 3 unrevoked Profiles, unlimited traffic, RUB, nullable price |
-| `POST /admin/users/:id/first-profile` | No body → first Profile ID, subscription times, status, link unless revoked |
-| `GET /admin/users/:id/profiles` | Profile IDs, revocation time, commercial status; no credentials/links |
-| `POST /admin/profiles/:id/link` | No body → explicit repeat display; does not change the Profile or term |
-| `GET /admin/profiles/:id/readiness` | Per-Node historical readiness, desired access, first ACK time and last received report/time separately |
-| `POST /admin/nodes` | `label`, `public_connection`, `bearer` → `201`, Node ID and label |
-| `GET /admin/nodes` | Public connection parameters, revisions and diagnostics; no credentials/verifiers/snapshots |
-| `PUT /admin/nodes/:id/bearer` | `{"bearer":"<new canonical token>"}` → `204` |
+| Method and path                       | Body / result                                                                                          |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `POST /admin/users`                   | `{"label":"Alice"}` → `201`, `id`, `label`                                                             |
+| `GET /admin/users`                    | IDs and labels only                                                                                    |
+| `GET /admin/plan`                     | One setting: 720 hours, 3 unrevoked Profiles, unlimited traffic, RUB, nullable price                   |
+| `POST /admin/users/:id/first-profile` | No body → first Profile ID, subscription times, status, link unless revoked                            |
+| `GET /admin/users/:id/profiles`       | Profile IDs, revocation time, commercial status; no credentials/links                                  |
+| `POST /admin/profiles/:id/link`       | No body → explicit repeat display; does not change the Profile or term                                 |
+| `GET /admin/profiles/:id/readiness`   | Per-Node historical readiness, desired access, first ACK time and last received report/time separately |
+| `POST /admin/nodes`                   | `label`, `public_connection`, `bearer` → `201`, Node ID and label                                      |
+| `GET /admin/nodes`                    | Public connection parameters, revisions and diagnostics; no credentials/verifiers/snapshots            |
+| `PUT /admin/nodes/:id/bearer`         | `{"bearer":"<new canonical token>"}` → `204`                                                           |
 
 Node registration accepts the following **public connection candidate**:
 

@@ -4,7 +4,10 @@ import { HttpError } from '../protocol.ts';
 import { secret } from '../secrets.ts';
 import { getConfigurations } from './use-cases.ts';
 
-export const deliveryController: FastifyPluginAsync<{ pool: Pool }> = async (app, { pool }) => {
+export const deliveryController: FastifyPluginAsync<{ pool: Pool }> = async (
+  app,
+  { pool },
+) => {
   app.get<{ Params: { secret: string } }>('/s/:secret', async (req, reply) => {
     // Check the wire encoding, including URL escaping, before a database lookup.
     if (req.raw.url !== '/s/' + req.params.secret) throw new HttpError(404);
