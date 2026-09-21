@@ -1,8 +1,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import { distributeAccessChange } from '../access-distribution.ts';
 import { transaction } from '../database.ts';
 import type { Database } from '../database.ts';
-import { lockDesiredAccess } from '../nodes/desired-access.ts';
 import * as repository from './repository.ts';
 
 type Failure = 'not_found' | 'profile_limit' | 'revoked' | 'expired';
@@ -37,14 +37,13 @@ export async function issueFirstProfile(pool: Pool, userId: string, origin: stri
     if (!await repository.lockUser(db, userId)) throw new AccessError('not_found');
     const existing = await repository.readFirstProfile(db, userId);
     if (existing) return profileLink(db, existing.first_profile_id, origin);
-    await repository.lockIssuance(db);
-    const updateDesiredAccess = await lockDesiredAccess(db);
-    const time = await repository.readTime(db);
-    if (await repository.countUnrevokedProfiles(db, userId) >= 3) throw new AccessError('profile_limit');
-    const id = randomUUID();
-    await repository.insertProfile(db, id, userId, randomUUID(), randomBytes(32));
-    await repository.insertSubscription(db, userId, id, time, 720);
-    await updateDesiredAccess(await repository.readDesiredProfiles(db, time));
+    const id = await distributeAccessChange(db, async time => {
+      if (await repository.countUnrevokedProfiles(db, userId) >= 3) throw new AccessError('profile_limit');
+      const id = randomUUID();
+      await repository.insertProfile(db, id, userId, randomUUID(), randomBytes(32));
+      await repository.insertSubscription(db, userId, id, time, 720);
+      return id;
+    });
     return profileLink(db, id, origin);
   });
 }
@@ -58,11 +57,7 @@ export async function listProfiles(db: Database, userId: string) {
   }));
 }
 
-// Internal reads for Node enrollment, readiness and configuration delivery.
-export async function getDesiredProfilesForNewNode(db: PoolClient) {
-  await repository.lockIssuance(db);
-  return repository.readDesiredProfiles(db);
-}
+// Internal reads for readiness and configuration delivery.
 export async function getProfileAccess(db: Database, profileId: string) {
   const p = await repository.readProfileAccess(db, profileId);
   if (!p) throw new AccessError('not_found');

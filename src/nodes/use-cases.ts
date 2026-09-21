@@ -1,11 +1,12 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import { enrollNode } from '../access-distribution.ts';
 import { transaction } from '../database.ts';
 import type { Database } from '../database.ts';
 import { digest } from '../secrets.ts';
-import { checked, maxRevision, same, snapshot, state } from '../snapshot.ts';
+import { checked, maxRevision, same, state } from '../snapshot.ts';
 import type { StoredSnapshot } from '../snapshot.ts';
-import { getDesiredProfilesForNewNode, getProfileAccess } from '../access/use-cases.ts';
+import { getProfileAccess } from '../access/use-cases.ts';
 import type { Connection, Report } from './model.ts';
 import { profileReadiness } from './readiness.ts';
 import * as repository from './repository.ts';
@@ -17,13 +18,7 @@ export class NodeError extends Error {
 }
 
 export async function registerNode(pool: Pool, label: string, connection: Connection, bearer: Buffer) {
-  return transaction(pool, async db => {
-    const profiles = await getDesiredProfilesForNewNode(db);
-    const id = randomUUID();
-    await repository.insertNode(db, { id, label, connection, secretHash: digest(bearer) });
-    await repository.insertSyncState(db, id, snapshot(id, connection.inbound_tag, '1', profiles));
-    return { id, label };
-  });
+  return transaction(pool, db => enrollNode(db, label, connection, bearer));
 }
 
 export async function rotateBearer(pool: Pool, nodeId: string, bearer: Buffer) {
