@@ -4,7 +4,7 @@
 
 ## Подготовка
 
-1. Направьте DNS A-запись `control.example.com` на VPS. Если есть AAAA-запись, она тоже должна вести на этот VPS. Во всех командах ниже замените `control.example.com` на реальное имя.
+1. Направьте DNS A-запись `control.uhuru.pro` на VPS. Если есть AAAA-запись, она тоже должна вести на этот VPS. Во всех командах ниже замените `control.uhuru.pro` на реальное имя.
 2. В firewall провайдера и хоста оставьте снаружи SSH, TCP 80 для ACME и TCP 443. TCP 8080 и PostgreSQL наружу не открывайте.
 3. Установите Node.js 24.11+ в линейке 24.x, PostgreSQL 15+, nginx и Certbot. Разместите этот репозиторий в `/opt/uhuru` с владельцем `root`, без права записи для сервисного пользователя.
 4. До запуска сервиса выполните требования к PostgreSQL, его журналам, правам на данные/WAL и запрету core dumps из [README](../README.md#install-on-a-dedicated-linux-control-plane). Они остаются обязательными после добавления nginx.
@@ -23,7 +23,7 @@ install -o root -g uhuru -m 0640 deploy/settings.example.json /etc/uhuru/setting
 install -m 0644 deploy/uhuru-control-plane.service /etc/systemd/system/
 ```
 
-SQL-команды предназначены только для **новой** базы, не для повторного запуска или восстановления. В `/etc/uhuru/settings.json` установите `origin` равным `https://control.example.com` и замените примерный пароль на уникальный случайный пароль из менеджера секретов. Не записывайте его в аргументы команд, историю shell или журналы. `port` оставьте `8080`; приложение принудительно слушает только `127.0.0.1`. Поля `tls_cert`, `tls_key` и `listen_host` для нового развёртывания не нужны: сертификат принадлежит nginx.
+SQL-команды предназначены только для **новой** базы, не для повторного запуска или восстановления. В `/etc/uhuru/settings.json` установите `origin` равным `https://control.uhuru.pro` и замените примерный пароль на уникальный случайный пароль из менеджера секретов. Не записывайте его в аргументы команд, историю shell или журналы. `port` оставьте `8080`; приложение принудительно слушает только `127.0.0.1`. Поля `tls_cert`, `tls_key` и `listen_host` для нового развёртывания не нужны: сертификат принадлежит nginx.
 
 ## Сертификат и nginx
 
@@ -37,7 +37,7 @@ cat > /etc/nginx/sites-available/uhuru <<'NGINX'
 server {
     listen 80;
     listen [::]:80;
-    server_name control.example.com;
+    server_name control.uhuru.pro;
     access_log off;
     error_log /dev/null crit;
     location ^~ /.well-known/acme-challenge/ { root /var/www/letsencrypt; }
@@ -49,10 +49,10 @@ ln -sfn /etc/nginx/sites-available/uhuru /etc/nginx/sites-enabled/uhuru
 nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
-certbot certonly --webroot -w /var/www/letsencrypt -d control.example.com
+certbot certonly --webroot -w /var/www/letsencrypt -d control.uhuru.pro
 ```
 
-Теперь установите [конфигурацию nginx](../deploy/uhuru-control-plane.nginx.conf), заменив в ней `control.example.com` на то же имя, что использовалось в Certbot:
+Теперь установите [конфигурацию nginx](../deploy/uhuru-control-plane.nginx.conf), заменив в ней `control.uhuru.pro` на то же имя, что использовалось в Certbot:
 
 ```sh
 install -m 0644 /opt/uhuru/deploy/uhuru-control-plane.nginx.conf /etc/nginx/sites-available/uhuru
@@ -82,9 +82,9 @@ certbot renew --dry-run
 
 ```sh
 ss -ltnp | grep -E ':(80|443|8080)\b'
-curl --silent --show-error --output /dev/null --write-out '%{http_code}\n' https://control.example.com/admin/plan
+curl --silent --show-error --output /dev/null --write-out '%{http_code}\n' https://control.uhuru.pro/admin/plan
 ```
 
 Ожидается nginx на `:80` и `:443`, приложение только на `127.0.0.1:8080`, а неавторизованный `/admin/plan` отвечает `401` через публичный HTTPS. Проверьте с другого хоста, что TCP 8080 и 5432 недоступны. Не проверяйте подписку, вставляя секретный URL прямо в командную строку или включив `curl -v`; порядок защищённых запросов описан в [README](../README.md#administrative-http-interface). После тестовой выдачи и синхронизации проверьте, что закрытый ключ TLS, конфигурации, ссылки подписки и Bearer не попали в журналы/снимки VPS. Для проверки ошибок прокси используйте одноразовые секреты.
 
-В настройках каждой Ноды задайте `control_plane` равным `https://control.example.com`. Для общедоверенного сертификата `ca_file` может быть `null`; Bearer и `node_id` устанавливаются как раньше. nginx не должен перенаправлять `/agent/v1/sync`: Agent считает редирект ошибкой и приостанавливает опрос до исправления и перезапуска. Публичные подписочные ссылки генерируются из `origin`, поэтому в нём не должно быть `:8080`.
+В настройках каждой Ноды задайте `control_plane` равным `https://control.uhuru.pro`. Для общедоверенного сертификата `ca_file` может быть `null`; Bearer и `node_id` устанавливаются как раньше. nginx не должен перенаправлять `/agent/v1/sync`: Agent считает редирект ошибкой и приостанавливает опрос до исправления и перезапуска. Публичные подписочные ссылки генерируются из `origin`, поэтому в нём не должно быть `:8080`.
