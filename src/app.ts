@@ -17,7 +17,6 @@ export function buildApp(options: {
   origin: string;
   adminUsername: string;
   adminPassword: string;
-  tls: { key: Buffer; cert: Buffer };
 }) {
   const origin = new URL(options.origin);
   if (
@@ -38,7 +37,6 @@ export function buildApp(options: {
     `Basic ${Buffer.from(`${options.adminUsername}:${options.adminPassword}`).toString('base64')}`,
   );
   const app = Fastify({
-    https: options.tls,
     logger: false,
     bodyLimit: 2 * 1024 * 1024,
     ajv: {
@@ -60,12 +58,10 @@ export function buildApp(options: {
       }
     },
   );
-  app.addHook('onRequest', async (req, reply) => {
+  app.addHook('onRequest', async (_req, reply) => {
     reply
       .header('Cache-Control', 'no-store')
       .header('Referrer-Policy', 'no-referrer');
-    if (!(req.raw.socket as import('node:tls').TLSSocket).encrypted)
-      throw new HttpError(400);
   });
   app.setErrorHandler((error, _req, reply) => {
     const e = error as { statusCode?: number; code?: string };

@@ -1,6 +1,6 @@
 # Uhuru Control Plane
 
-Ticket 02: Node.js 24 / Fastify / PostgreSQL, direct HTTPS administration and
+Ticket 02: Node.js 24 / Fastify / PostgreSQL, nginx HTTPS administration and
 subscription delivery, and the accepted Rust Node Agent sync protocol. The source
 ticket is `../../uhuru-vpn-plan-v2/.scratch/uhuru-vpn-mvp/ticket-drafts/02-first-profile-happ.md`;
 its accepted contracts are in that planning repository's `MVP-SPEC.md`. Planning
@@ -39,7 +39,7 @@ The Configuration Delivery module serves Subscription Links:
 Commercial Access and Nodes meet in Access Distribution instead of importing each other's enrollment operations.
 `src/secrets.ts` shares token decoding and hashing independently of HTTP;
 `src/snapshot.ts` retains canonical snapshot validation and hashing. `src/app.ts`
-assembles the three modules and configures TLS, administrative authentication,
+assembles the three modules and configures administrative authentication,
 JSON parsing, response headers and sanitized error handling.
 
 `src/database.ts` provides the shared transaction implementation. First issuance
@@ -54,7 +54,7 @@ the Node before its sync state, validates ACK provenance against the previous se
 snapshot, then records the new response in that same transaction. It never takes
 a User lock after a Node lock. Repeated ACKs retain the first confirmation time.
 
-See [the domain glossary](CONTEXT.md). The existing HTTPS/PostgreSQL checks remain
+See [the domain glossary](CONTEXT.md). The HTTP-backend/PostgreSQL checks remain
 the behavioral test surface, alongside direct use-case checks for issuance and
 ACK rollback at COMMIT, token rotation, historical readiness and configuration
 delivery. Delivery checks also cover URI encoding and response headers.
@@ -69,15 +69,16 @@ sh stand/run.sh ../node-agent
 ```
 
 `npm test` creates a private temporary PostgreSQL cluster with no TCP listener,
-runs real HTTPS tests using a restricted application role, then removes the cluster.
+runs real loopback HTTP tests using a restricted application role, then removes the cluster.
 PostgreSQL `initdb`/`pg_ctl` must be on PATH (Homebrew PostgreSQL 18 is detected).
 The native Node test runner accepts filters, e.g. `npm test -- --test-name-pattern='ACK'`.
 
 The stand builds the existing Rust agent and pinned Xray v26.5.9, then adds this
-Control Plane and PostgreSQL. It uses an ARM64 private privileged systemd container,
+Control Plane, nginx and PostgreSQL. It uses an ARM64 private privileged systemd container,
 with **no host mounts or published ports**. Secrets are generated inside it, the
 container is removed on exit, and only sanitized results go to
-`target/stand-results.json`. A local TLS 1.3 target and Xray client exercise the
+`target/stand-results.json`. The agent uses HTTPS through nginx; a separate local
+TLS 1.3 target and Xray client exercise the
 TCP + REALITY + XTLS Vision candidate using the URI returned by this server.
 This does not establish public VPS routing or Happ compatibility.
 
@@ -122,19 +123,21 @@ for the separate Node Agent/Xray services.
 
 Create `/etc/uhuru/settings.json` from [the example](deploy/settings.example.json),
 with a unique random admin password and the final HTTPS origin. Use root:`uhuru`
-0640 for the settings and TLS key; use a valid certificate for that origin. The
-server terminates TLS directly on port 8443 and does not trust forwarded headers.
-Restrict access with the VPS firewall as appropriate, then start:
+0640 for the settings. The application listens on HTTP `127.0.0.1:8080` only;
+nginx terminates public HTTPS on port 443. It does not trust forwarded headers.
+Install [the nginx site](deploy/uhuru-control-plane.nginx.conf) with a public certificate,
+then start:
 
 ```sh
 systemctl daemon-reload
 systemctl enable --now uhuru-control-plane
 ```
 
-No proxy or server response cache is installed. If a proxy is later added, disable
-its access/error request dumps and caching before routing secrets through it, and
-repeat the log-leak checks. Fastify logging is disabled and errors return only fixed
-codes; no request URL, body, SQL error or stack is emitted. See the
+The nginx site disables access/error logs, proxy caching, and request/response
+buffering so secret-bearing URLs and bodies are not persisted by the proxy.
+Fastify logging is disabled and errors return only fixed codes; no request URL,
+body, SQL error or stack is emitted. Follow [the VPS deployment guide](docs/vps-deployment.ru.md)
+for certificate issuance, firewall and proxy checks. See the
 [Fastify server options](https://fastify.dev/docs/latest/Reference/Server/).
 
 ## Administrative HTTP interface

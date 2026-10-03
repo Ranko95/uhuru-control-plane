@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import { before, after, beforeEach, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import https from 'node:https';
+import http from 'node:http';
 import pg from 'pg';
 import { buildApp } from '../src/app.ts';
 import * as access from '../src/access/use-cases.ts';
@@ -23,14 +22,12 @@ const pool = new pg.Pool({
 const authorization = `Basic ${Buffer.from('admin:integration-password').toString('base64')}`;
 let app: ReturnType<typeof buildApp>;
 let port: number;
-let tls: { key: Buffer; cert: Buffer };
 async function startApp() {
   app = buildApp({
     pool,
     origin: 'https://localhost',
     adminUsername: 'admin',
     adminPassword: 'integration-password',
-    tls,
   });
   await app.listen({ host: '127.0.0.1', port: 0 });
   port = (app.server.address() as { port: number }).port;
@@ -47,12 +44,10 @@ async function request(
     text: string;
     json: () => ReturnType<typeof JSON.parse>;
   }>((resolve, reject) => {
-    const req = https.request(
+    const req = http.request(
       {
         hostname: '127.0.0.1',
-        servername: 'localhost',
         port,
-        ca: tls.cert,
         method,
         path,
         headers: {
@@ -94,12 +89,10 @@ async function dropResponse(
   auth = authorization,
 ) {
   await new Promise<void>((resolve, reject) => {
-    const req = https.request(
+    const req = http.request(
       {
         hostname: '127.0.0.1',
-        servername: 'localhost',
         port,
-        ca: tls.cert,
         method: 'POST',
         path,
         headers: {
@@ -125,32 +118,6 @@ before(async () => {
     'utf8',
   );
   await db.query(grants.replaceAll('DATABASE uhuru', 'DATABASE postgres'));
-  const root = process.env.TEST_DATABASE_SOCKET!;
-  execFileSync(
-    'openssl',
-    [
-      'req',
-      '-x509',
-      '-newkey',
-      'rsa:2048',
-      '-nodes',
-      '-days',
-      '1',
-      '-subj',
-      '/CN=localhost',
-      '-addext',
-      'subjectAltName=DNS:localhost',
-      '-keyout',
-      `${root}/key.pem`,
-      '-out',
-      `${root}/cert.pem`,
-    ],
-    { stdio: 'ignore' },
-  );
-  tls = {
-    key: await readFile(`${root}/key.pem`),
-    cert: await readFile(`${root}/cert.pem`),
-  };
   await startApp();
 });
 beforeEach(async () => {
@@ -247,7 +214,7 @@ test('a subscription requires a first profile owned by the same user', async () 
   );
 });
 
-test('HTTPS admin creates a user and safely repeats first issuance and link display', async () => {
+test('HTTP backend creates a user and safely repeats first issuance and link display', async () => {
   assert.equal(
     (await request('POST', '/admin/users', { label: 'Alice' }, null)).status,
     401,

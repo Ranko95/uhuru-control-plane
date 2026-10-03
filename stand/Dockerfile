@@ -3,7 +3,7 @@ FROM uhuru-node-agent-stand:ticket-01
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
- && apt-get update && apt-get install -y --no-install-recommends postgresql \
+ && apt-get update && apt-get install -y --no-install-recommends postgresql nginx \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --no-create-home --shell /usr/sbin/nologin uhuru
 WORKDIR /opt/uhuru

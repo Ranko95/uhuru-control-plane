@@ -1,4 +1,4 @@
-"""Disposable real PostgreSQL -> HTTPS Control Plane -> Rust Agent -> Xray stand."""
+"""Disposable PostgreSQL -> HTTP Control Plane -> HTTPS nginx -> Rust Agent -> Xray stand."""
 import base64
 import hashlib
 import http.client
@@ -42,15 +42,29 @@ def main():
     gid = int(command(['id', '-g', 'uhuru']).stdout)
     Path('/etc/uhuru').mkdir(mode=0o750)
     os.chown('/etc/uhuru', 0, gid)
-    for name in ['key.pem', 'cert.pem']:
-        write(Path('/etc/uhuru')/name, (ROOT/name).read_bytes(), gid=gid)
     password = base64.urlsafe_b64encode(os.urandom(32)).decode()
     basic = 'Basic ' + base64.b64encode(('admin:' + password).encode()).decode()
-    cp_settings = dict(origin='https://localhost:18444', listen_host='127.0.0.1', port=18444,
-                       database_socket='/var/run/postgresql', admin_username='admin', admin_password=password,
-                       tls_cert='/etc/uhuru/cert.pem', tls_key='/etc/uhuru/key.pem')
+    cp_settings = dict(origin='https://localhost:18444', port=18080,
+                       database_socket='/var/run/postgresql', admin_username='admin', admin_password=password)
     write(Path('/etc/uhuru/settings.json'), cp_settings, gid=gid)
     command(['systemctl', 'start', 'uhuru-control-plane'])
+    def loopback_only():
+        listeners = [line.split()[1] for line in Path('/proc/net/tcp').read_text().splitlines()[1:]
+                     if line.split()[3] == '0A']
+        return f'0100007F:{18080:04X}' in listeners and f'00000000:{18080:04X}' not in listeners
+    wait_for(loopback_only, 'loopback_only', 15)
+    nginx_config = Path('/opt/uhuru/deploy/uhuru-control-plane.nginx.conf').read_text()
+    nginx_config = (nginx_config
+        .replace('/etc/letsencrypt/live/control.example.com/fullchain.pem', str(ROOT/'cert.pem'))
+        .replace('/etc/letsencrypt/live/control.example.com/privkey.pem', str(ROOT/'key.pem'))
+        .replace('control.example.com', 'localhost')
+        .replace('listen 443 ssl;', 'listen 18444 ssl;')
+        .replace('listen [::]:443 ssl;', 'listen [::]:18444 ssl;')
+        .replace('127.0.0.1:8080', '127.0.0.1:18080'))
+    Path('/etc/nginx/sites-available/default').write_text(nginx_config)
+    command(['nginx', '-t'])
+    command(['systemctl', 'start', 'nginx'])
+    command(['systemctl', 'reload', 'nginx'])
     context = ssl.create_default_context(cafile=str(ROOT/'ca.pem'))
 
     def request(method, path, body=None, auth=basic):
@@ -122,6 +136,9 @@ def main():
     first_confirmed = ready['confirmed_at']
     status, headers, body = request('GET', link_path, auth='')
     check(status == 200 and headers.get('cache-control') == 'no-store', 'subscription_response')
+    token = link_path.rsplit('/', 1)[1]
+    encoded_path = '/s/%{:02X}{}'.format(ord(token[0]), token[1:])
+    check(request('GET', encoded_path, auth='')[0] == 404, 'proxy_preserves_raw_subscription_path')
     uris = body.decode().strip().splitlines()
     check(len(uris) == 1, 'exactly_one_configuration')
     uri = urlsplit(uris[0])
@@ -160,11 +177,15 @@ def main():
     command(['systemctl', 'restart', 'uhuru-control-plane'])
     wait_for(started, 'restart_control_plane', 15)
     check(json.loads(request('POST', f'/admin/users/{user}/first-profile')[2]) == issued, 'restart_same_link_and_term')
+    command(['systemctl', 'stop', 'uhuru-control-plane'])
+    check(request('GET', link_path, auth='')[0] == 502, 'proxy_upstream_failure')
+    command(['systemctl', 'start', 'uhuru-control-plane'])
+    wait_for(started, 'restart_after_proxy_failure', 15)
     forbidden = [bearer, password, basic, uri.username, issued['link'], link_path.rsplit('/', 1)[1], private_key]
     forbidden += [base64.urlsafe_b64decode(link_path.rsplit('/', 1)[1] + '=').hex(),
                   hashlib.sha256(base64.urlsafe_b64decode(bearer + '=')).hexdigest(), 'BEGIN PRIVATE KEY']
-    logs = command(['journalctl', '--no-pager', '-o', 'cat', '-u', 'uhuru-control-plane', '-u', 'uhuru-node-agent', '-u', 'uhuru-xray']).stdout
-    for log in Path('/var/log/postgresql').glob('*.log'):
+    logs = command(['journalctl', '--no-pager', '-o', 'cat', '-u', 'uhuru-control-plane', '-u', 'uhuru-node-agent', '-u', 'uhuru-xray', '-u', 'nginx']).stdout
+    for log in [*Path('/var/log/postgresql').glob('*.log'), *Path('/var/log/nginx').glob('*.log')]:
         logs += log.read_bytes()
     check(all(item.encode() not in logs for item in forbidden), 'secret_in_logs')
     data = Path('/var/lib/postgresql')/version/'main'
@@ -182,12 +203,13 @@ def main():
         xray_sha256=settings['xray_sha256'], node=command(['node', '--version']).stdout.decode().strip(),
         postgres=command(['psql', '--version']).stdout.decode().strip(), issued_at=issued['starts_at'], confirmed_at=first_confirmed,
         transport='TCP + REALITY + XTLS Vision; local TLS 1.3 target', mime='text/plain; charset=utf-8',
-        checks=['HTTPS issuance', 'no configuration before ACK', 'real agent save/apply/verify/ACK',
+        checks=['nginx HTTPS issuance', 'HTTP loopback only', 'no configuration before ACK', 'real agent save/apply/verify/ACK',
                 'one matching live Xray account', 'URI-derived Xray client HTTPS probe', 'stable repeated confirmation',
-                'Control Plane restart preserves identity and term', 'application/agent/Xray/PostgreSQL log secret scan',
+                'Control Plane restart preserves identity and term', 'proxy preserves raw URL', 'proxy 502 without secret log',
+                'application/agent/Xray/nginx/PostgreSQL log secret scan',
                 'private active database/WAL', 'zero core limits'],
         android='NOT RUN', ios='NOT RUN', public_vps_egress='NOT RUN', encrypted_backup='NOT RUN: no copy created',
-        proxy_logs='N/A: direct TLS, no proxy')
+        proxy_logs='PASS: nginx logs scanned for disposable secrets')
     Path('/opt/uhuru/stand-results.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result), flush=True)
 

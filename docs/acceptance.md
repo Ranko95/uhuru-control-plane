@@ -54,6 +54,19 @@ The production deployment's actual VPS firewall, provider snapshot policy, files
 permissions and certificate provisioning still require verification on that VPS.
 No encrypted archive was made: backup encryption and restore are **NOT RUN**.
 
+## nginx boundary check — PASS, 2026-09-30
+
+After moving public TLS to nginx, `npm run typecheck`, `npm run lint`,
+`npm run format:check`, all 17 PostgreSQL/HTTP tests, and
+`sh stand/run.sh ../node-agent` passed. The disposable stand used the same nginx
+site template with a local test CA and verified HTTPS issuance and real Agent
+sync through nginx, HTTP bound only to loopback, exact subscription URL forwarding,
+and a 502 upstream error without disposable secrets in nginx/application/Agent/Xray/
+PostgreSQL logs. Sanitized details are generated in `target/stand-results.json`.
+The 2026-09-13 direct-TLS evidence above remains the historical ticket-02 result;
+public VPS routing, a public CA certificate, and physical Happ checks are still
+**NOT RUN**.
+
 ## Q1/Q2 first import: NOT RUN on Android and iOS
 
 The user will perform these checks after implementation; no prepared VPS or physical

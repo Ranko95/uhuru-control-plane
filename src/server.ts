@@ -29,6 +29,8 @@ try {
     !settings.database_socket.startsWith('/')
   )
     throw new Error('unix_database_required');
+  if (settings.listen_host && settings.listen_host !== '127.0.0.1')
+    throw new Error('loopback_required');
   const pool = new pg.Pool({
     host: settings.database_socket,
     user: 'uhuru',
@@ -48,10 +50,6 @@ try {
     origin: settings.origin,
     adminUsername: settings.admin_username,
     adminPassword: settings.admin_password,
-    tls: {
-      key: await readFile(settings.tls_key),
-      cert: await readFile(settings.tls_cert),
-    },
   });
   for (const signal of ['SIGINT', 'SIGTERM'] as const)
     process.on(signal, () => {
@@ -61,8 +59,8 @@ try {
         .then(() => process.exit(0));
     });
   await app.listen({
-    host: settings.listen_host ?? '127.0.0.1',
-    port: settings.port ?? 8443,
+    host: '127.0.0.1',
+    port: settings.port ?? 8080,
   });
   process.stdout.write('control_plane_started\n');
 } catch {
