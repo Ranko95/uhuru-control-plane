@@ -15,8 +15,8 @@
     "test": "sh test/run.sh"
   },
   "dependencies": {
-    "fastify": "^5.6.0",
-    "pg": "^8.16.3"
+    "fastify": "5.12.5",
+    "pg": "8.23.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
