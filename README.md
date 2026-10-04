@@ -148,6 +148,11 @@ for certificate issuance, firewall and proxy checks. See the
 The [recorded VPS deployment and step-by-step runbook](docs/vps-deployment-runbook.ru.md)
 contains the commands, host settings and verification results from the deployment on 3 October 2026.
 
+Для обновлений после push в `main` используйте [GitHub Actions и SSH-автодеплой](docs/autodeploy.ru.md):
+обязательные typecheck/тесты, подготовка версии до перезапуска systemd и откат при
+неудачном запуске. Инструкция включает разовую настройку ограниченного SSH-доступа
+и команду ручного отката.
+
 ## Administrative HTTP interface
 
 Every `/admin` route requires Basic Auth over HTTPS. Create the User first and retain

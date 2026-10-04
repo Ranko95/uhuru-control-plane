@@ -1,0 +1,59 @@
+name: Check and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keep a deployment running; replace obsolete pending runs with the newest one.
+concurrency:
+  group: control-plane-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.21.0'
+      - name: PostgreSQL tools for isolated integration tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-16
+          echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - name: Check deployment scripts
+        run: |
+          bash -n deploy/uhuru-deploy deploy/setup-autodeploy.sh
+          python3 test/deploy_test.py
+      - name: Deploy the checked commit
+        env:
+          DEPLOY_KEY: ${{ secrets.CONTROL_PLANE_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.CONTROL_PLANE_KNOWN_HOSTS }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          umask 077
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          unset DEPLOY_KEY DEPLOY_KNOWN_HOSTS
+          ssh -i "$ssh_dir/key" -p 48222 \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            uhuru-deploy@87.251.77.65 "deploy $DEPLOY_SHA"
