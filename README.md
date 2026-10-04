@@ -140,6 +140,9 @@ body, SQL error or stack is emitted. Follow [the VPS deployment guide](docs/vps-
 for certificate issuance, firewall and proxy checks. See the
 [Fastify server options](https://fastify.dev/docs/latest/Reference/Server/).
 
+The [recorded VPS deployment and step-by-step runbook](docs/vps-deployment-runbook.ru.md)
+contains the commands, host settings and verification results from the deployment on 3 October 2026.
+
 ## Administrative HTTP interface
 
 Every `/admin` route requires Basic Auth over HTTPS. Create the User first and retain
