@@ -3,7 +3,7 @@ import type { Database } from '../database.ts';
 import type { Connection, Diagnostics, PublicNode, Report } from './model.ts';
 import type { StoredSnapshot } from '../snapshot.ts';
 
-type DesiredNode = {
+export type DesiredNode = {
   id: string;
   public_connection: { inbound_tag: string };
   desired_snapshot: StoredSnapshot;

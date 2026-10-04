@@ -1,5 +1,6 @@
 """Disposable PostgreSQL -> HTTP Control Plane -> HTTPS nginx -> Rust Agent -> Xray stand."""
 import base64
+from datetime import datetime, timezone
 import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import socket
 import ssl
 import subprocess
 import sys
@@ -16,6 +18,9 @@ from urllib.parse import urlsplit, parse_qs
 
 sys.path.insert(0, '/stand')
 from e2e import ROOT, SETTINGS, BEARER, STATE, XRAY, AGENT, check, command, wait_for, write, api_users
+
+# Accelerated Subscription fixture for this disposable stand only.
+STAND_EXPIRY_SECONDS = 2
 
 
 def main():
@@ -100,10 +105,26 @@ def main():
     check(request('GET', link_path, auth='')[0] == 503, 'no_config_before_ack')
     check(request('POST', '/admin/nodes', registration)[0] == 409, 'duplicate_secret_database_error')
 
+    stream_release = threading.Event()
+    stream_before, stream_after = b'before-expiry', b'after-expiry'
+
     class Resource(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
         def do_GET(self):
+            if self.path == '/open':
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(stream_before) + len(stream_after)))
+                self.end_headers()
+                self.wfile.write(stream_before)
+                self.wfile.flush()
+                if stream_release.wait(65):
+                    try:
+                        self.wfile.write(stream_after)
+                        self.wfile.flush()
+                    except OSError:
+                        pass
+                return
             body = b'uhuru-control-resource'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
@@ -181,6 +202,82 @@ def main():
     check(request('GET', link_path, auth='')[0] == 502, 'proxy_upstream_failure')
     command(['systemctl', 'start', 'uhuru-control-plane'])
     wait_for(started, 'restart_after_proxy_failure', 15)
+
+    # Ticket 03: use the real polling agent, never open the panel/link to expire desired.
+    xray_pid = command(['systemctl', 'show', '-p', 'MainPID', '--value', 'uhuru-xray']).stdout
+    client = subprocess.Popen([XRAY, 'run', '-config', str(ROOT/'client.json')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    open_probe = None
+    try:
+        wait_for(probe, 'pre_expiry_new_transport', 15)
+        open_path = ROOT/'open-response'
+        write(open_path, b'', mode=0o600)
+        with open_path.open('wb') as output:
+            open_probe = subprocess.Popen(['curl', '--silent', '--no-buffer', '--http1.1', '--max-time', '65',
+                '--noproxy', '', '--socks5-hostname', '127.0.0.1:10880', '--cacert', str(ROOT/'ca.pem'),
+                'https://localhost:18445/open'], stdout=output, stderr=subprocess.DEVNULL)
+        wait_for(lambda: open_path.read_bytes() == stream_before, 'open_transport_before_expiry', 10)
+        sql = ("UPDATE subscriptions SET starts_at=clock_timestamp()-interval '1 second', "
+               f"ends_at=clock_timestamp()+interval '{STAND_EXPIRY_SECONDS} seconds' WHERE user_id='{user}' "
+               'RETURNING extract(epoch FROM ends_at);')
+        expires_epoch = float(command(['runuser', '-u', 'postgres', '--', 'psql', '-X', '-Atq',
+                                      '-v', 'ON_ERROR_STOP=1', '-d', 'uhuru', '-c', sql]).stdout)
+        expires_at = datetime.fromtimestamp(expires_epoch, timezone.utc).isoformat()
+        wait_for(lambda: api_users() == [], 'expiry_removal_timeout', 60 + STAND_EXPIRY_SECONDS)
+        persisted = json.loads((STATE/'current/metadata.json').read_bytes())['snapshot']
+        check(persisted['users'] == [], 'expiry_not_durably_saved')
+        check(command(['systemctl', 'show', '-p', 'MainPID', '--value', 'uhuru-xray']).stdout == xray_pid,
+              'expiry_restarted_xray')
+        readiness_path = f"/admin/profiles/{issued['first_profile_id']}/readiness"
+        wait_for(lambda: not json.loads(request('GET', readiness_path)[2])[0]['ready'], 'expiry_ack_timeout', 20)
+        expired_readiness = json.loads(request('GET', readiness_path)[2])[0]
+        check(not expired_readiness['desired_access'] and expired_readiness['confirmed']['revision'] == persisted['revision'],
+              'expiry_ack_wrong_state')
+        status, expired_headers, expired_body = request('GET', link_path, auth='')
+        check(status == 403 and expired_headers.get('cache-control') == 'no-store' and b'vless://' not in expired_body,
+              'expired_link_response')
+        stream_release.set()
+        open_probe.wait(timeout=10)
+        old_transport = ('continued after removal' if open_probe.returncode == 0 and
+                         open_path.read_bytes() == stream_before + stream_after else 'closed or failed after removal')
+        old_observed_at = datetime.now(timezone.utc).isoformat()
+        client.terminate()
+        client.wait(timeout=10)
+        # A newly started client cannot reuse the earlier VLESS transport.
+        client = subprocess.Popen([XRAY, 'run', '-config', str(ROOT/'client.json')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        def client_listening():
+            try:
+                with socket.create_connection(('127.0.0.1', 10880), timeout=1):
+                    return True
+            except OSError:
+                return False
+        wait_for(client_listening, 'fresh_client_start', 10)
+        check(command(['curl', '--silent', '--http1.1', '--max-time', '5', '--cacert', str(ROOT/'ca.pem'),
+                       'https://localhost:18445/']).stdout == b'uhuru-control-resource', 'expiry_target_unavailable')
+        attempted_at = datetime.now(timezone.utc).isoformat()
+        check(not probe(), 'expired_credential_authenticated')
+        denied_after_seconds = round(time.time() - expires_epoch, 3)
+        check(0 <= denied_after_seconds <= 60, 'expiry_exceeded_60_seconds')
+        shown = json.loads(request('POST', f"/admin/profiles/{issued['first_profile_id']}/link")[2])
+        check(shown['status'] == 'expired' and shown['link'] == issued['link'] and
+              shown['first_profile_id'] == issued['first_profile_id'], 'expiry_changed_profile_or_link')
+        identity = command(['runuser', '-u', 'postgres', '--', 'psql', '-X', '-Atq', '-d', 'uhuru', '-c',
+            f"SELECT vless_uuid FROM access_profiles WHERE id='{issued['first_profile_id']}' AND revoked_at IS NULL;"]).stdout.decode().strip()
+        check(identity == uri.username, 'expiry_changed_or_revoked_credential')
+        expiry = dict(status='PASS', accelerated_stand_seconds=STAND_EXPIRY_SECONDS, ends_at=expires_at,
+            confirmed_at=expired_readiness['confirmed_at'], fresh_transport_attempt_at=attempted_at,
+            refusal_observed_at=datetime.now(timezone.utc).isoformat(), denied_after_seconds=denied_after_seconds,
+            saved_managed_set='empty', xray_managed_set='empty', xray_restarted=False,
+            profile_and_secrets='preserved, not revoked', http_status=status, cache_control=expired_headers.get('cache-control'),
+            earlier_transport=old_transport, earlier_transport_observed_at=old_observed_at,
+            android='NOT RUN', ios='NOT RUN', happ_cache='NOT RUN')
+    finally:
+        stream_release.set()
+        if open_probe and open_probe.poll() is None:
+            open_probe.terminate()
+            open_probe.wait(timeout=10)
+        client.terminate()
+        client.wait(timeout=10)
+
     forbidden = [bearer, password, basic, uri.username, issued['link'], link_path.rsplit('/', 1)[1], private_key]
     forbidden += [base64.urlsafe_b64decode(link_path.rsplit('/', 1)[1] + '=').hex(),
                   hashlib.sha256(base64.urlsafe_b64decode(bearer + '=')).hexdigest(), 'BEGIN PRIVATE KEY']
@@ -202,10 +299,11 @@ def main():
         xray=command([XRAY, 'version']).stdout.decode().splitlines()[0],
         xray_sha256=settings['xray_sha256'], node=command(['node', '--version']).stdout.decode().strip(),
         postgres=command(['psql', '--version']).stdout.decode().strip(), issued_at=issued['starts_at'], confirmed_at=first_confirmed,
-        transport='TCP + REALITY + XTLS Vision; local TLS 1.3 target', mime='text/plain; charset=utf-8',
+        transport='TCP + REALITY + XTLS Vision; local TLS 1.3 target', mime='text/plain; charset=utf-8', expiry=expiry,
         checks=['nginx HTTPS issuance', 'HTTP loopback only', 'no configuration before ACK', 'real agent save/apply/verify/ACK',
                 'one matching live Xray account', 'URI-derived Xray client HTTPS probe', 'stable repeated confirmation',
                 'Control Plane restart preserves identity and term', 'proxy preserves raw URL', 'proxy 502 without secret log',
+                'expiry saved/applied/verified/ACK without Xray restart', 'fresh expired VLESS transport refused within 60 seconds',
                 'application/agent/Xray/nginx/PostgreSQL log secret scan',
                 'private active database/WAL', 'zero core limits'],
         android='NOT RUN', ios='NOT RUN', public_vps_egress='NOT RUN', encrypted_backup='NOT RUN: no copy created',

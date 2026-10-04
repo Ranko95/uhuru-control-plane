@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { enrollNode } from '../access-distribution.ts';
+import { enrollNode, refreshNodeAccess } from '../access-distribution.ts';
 import { transaction } from '../database.ts';
 import type { Database } from '../database.ts';
 import { digest } from '../secrets.ts';
@@ -83,7 +83,7 @@ export async function synchronize(pool: Pool, bearer: Buffer, report: Report) {
     if (report.verified && !same(report.saved, report.verified))
       throw new NodeError('invalid_report');
     const row = await repository.lockSyncState(db, node.id);
-    const desired = checked(
+    let desired = checked(
       row.desired_snapshot,
       node.id,
       node.public_connection.inbound_tag,
@@ -109,6 +109,11 @@ export async function synchronize(pool: Pool, bearer: Buffer, report: Report) {
         if (a.revision === b.revision && !same(a, b))
           throw new NodeError('state_conflict');
     }
+    desired = await refreshNodeAccess(db, {
+      ...node,
+      desired_snapshot: desired,
+    });
+    known[0] = desired;
     for (const ref of [report.saved, report.verified]) {
       if (!ref) continue;
       if (BigInt(ref.revision) > BigInt(desired.revision))

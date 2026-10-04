@@ -348,6 +348,114 @@ test('only a sent and verified snapshot unlocks the profile, with stable first c
   assert.equal(config.headers['cache-control'], 'no-store');
 });
 
+test('agent polls expire access without user requests and preserve the Profile and link', async () => {
+  const node = await registerNode();
+  const p = await issue();
+  const active = (await sync(node)).json();
+  await sync(node, active.desired, active.desired);
+  assert.equal((await request('GET', p.path, undefined, null)).status, 200);
+
+  // Explicit accelerated test fixture; production issuance remains 720 hours.
+  await db.query(
+    "UPDATE subscriptions SET starts_at=clock_timestamp()-interval '1 second', ends_at=clock_timestamp()+interval '100 milliseconds' WHERE user_id=$1",
+    [p.user.id],
+  );
+  await db.query('SELECT pg_sleep(0.2)');
+  // No panel or Subscription Link request triggers the transition.
+  const polls = await Promise.all(
+    Array.from({ length: 8 }, () => sync(node, active.desired, active.desired)),
+  );
+  for (const response of polls) {
+    assert.equal(response.status, 200);
+    const expired = response.json();
+    assert.equal(expired.status, 'snapshot');
+    assert.equal(expired.desired.revision, '3');
+    assert.deepEqual(expired.snapshot.users, []);
+    assert.equal(expired.ack_status, 'already_confirmed');
+    assert.deepEqual(expired.desired, polls[0].json().desired);
+  }
+  const denied = await request('GET', p.path, undefined, null);
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers['cache-control'], 'no-store');
+  assert.deepEqual(denied.json(), { error: 'request_rejected' });
+  const profiles = (
+    await request('GET', `/admin/users/${p.user.id}/profiles`)
+  ).json();
+  assert.deepEqual(profiles, [
+    { id: p.first_profile_id, revoked_at: null, status: 'expired' },
+  ]);
+  const shown = (
+    await request('POST', `/admin/profiles/${p.first_profile_id}/link`)
+  ).json();
+  assert.ok(shown.link === p.link);
+  assert.equal(shown.first_profile_id, p.first_profile_id);
+  const readinessPath = `/admin/profiles/${p.first_profile_id}/readiness`;
+  const pending = (await request('GET', readinessPath)).json()[0];
+  assert.equal(pending.desired_access, false);
+  assert.equal(pending.ready, true); // Historical permission; removal has no ACK yet.
+  const empty = polls[0].json().desired;
+  const applied = (await sync(node, empty, empty)).json();
+  assert.equal(applied.status, 'up_to_date');
+  assert.equal(applied.ack_status, 'accepted');
+  const confirmed = (await request('GET', readinessPath)).json()[0];
+  assert.equal(confirmed.ready, false);
+  assert.equal(confirmed.desired_access, false);
+  assert.deepEqual(confirmed.confirmed, empty);
+  assert.equal(
+    (await sync(node, active.desired, active.desired)).json().ack_status,
+    'ignored_stale',
+  );
+  assert.equal((await request('GET', p.path, undefined, null)).status, 403);
+  assert.deepEqual((await sync(node, empty, empty)).json().desired, empty);
+});
+
+test('a poll waiting for a Node lock expires before accepting a previously sent ACK', async () => {
+  const node = await registerNode();
+  const p = await issue();
+  const active = (await sync(node)).json();
+  const blocker = await db.connect();
+  await blocker.query('BEGIN');
+  try {
+    await blocker.query('SELECT id FROM nodes WHERE id=$1 FOR UPDATE', [
+      node.id,
+    ]);
+    const polling = sync(node, active.desired, active.desired);
+    const deadline = Date.now() + 5000;
+    while (
+      !(
+        await db.query(
+          "SELECT 1 FROM pg_stat_activity WHERE usename='uhuru' AND wait_event_type='Lock'",
+        )
+      ).rowCount
+    ) {
+      assert.ok(Date.now() < deadline, 'agent poll must reach the held lock');
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // Expire only after the HTTP poll has started and reached the Node lock.
+    await blocker.query(
+      "UPDATE subscriptions SET starts_at=clock_timestamp()-interval '1 second', ends_at=clock_timestamp() WHERE user_id=$1",
+      [p.user.id],
+    );
+    await blocker.query('COMMIT');
+    const response = await polling;
+    assert.equal(response.status, 200);
+    const expired = response.json();
+    assert.equal(expired.ack_status, 'accepted');
+    assert.equal(expired.status, 'snapshot');
+    assert.equal(expired.desired.revision, '3');
+    assert.deepEqual(expired.snapshot.users, []);
+    assert.equal((await request('GET', p.path, undefined, null)).status, 403);
+    const readiness = (
+      await request('GET', `/admin/profiles/${p.first_profile_id}/readiness`)
+    ).json()[0];
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.desired_access, false);
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+  }
+});
+
 test('configuration delivery works without HTTP and preserves URI encoding and response headers', async () => {
   const label = 'Москва #1 / ?';
   const bearer = randomBytes(32);
@@ -969,6 +1077,21 @@ test('the real-agent JCS golden snapshot verifies sorted users and fails closed 
       '2c43039fec48a7b3144418850292f9ac9c15056f3ce76fa66e4c9ceb6164a986',
     snapshot: value,
   };
+  // The golden desired set must also represent current Commercial Access.
+  const owner = randomUUID();
+  await db.query('INSERT INTO users(id,label) VALUES ($1,$2)', [
+    owner,
+    'Golden',
+  ]);
+  for (const p of value.users)
+    await db.query(
+      'INSERT INTO access_profiles(id,user_id,vless_uuid,link_secret) VALUES ($1,$2,$3,$4)',
+      [p.profile_id, owner, p.vless_uuid, randomBytes(32)],
+    );
+  await db.query(
+    "INSERT INTO subscriptions(user_id,first_profile_id,starts_at,ends_at) VALUES ($1,$2,clock_timestamp(),clock_timestamp()+interval '720 hours')",
+    [owner, value.users[0].profile_id],
+  );
   await db.query(
     'INSERT INTO nodes(id,label,public_connection,agent_secret_hash) VALUES ($1,$2,$3,$4)',
     [

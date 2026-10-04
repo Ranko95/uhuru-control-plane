@@ -1,10 +1,12 @@
 # Uhuru Control Plane
 
-Ticket 02: Node.js 24 / Fastify / PostgreSQL, nginx HTTPS administration and
-subscription delivery, and the accepted Rust Node Agent sync protocol. The source
-ticket is `../../uhuru-vpn-plan-v2/.scratch/uhuru-vpn-mvp/ticket-drafts/02-first-profile-happ.md`;
-its accepted contracts are in that planning repository's `MVP-SPEC.md`. Planning
-files and the existing agent are unchanged.
+Задачи 02–03: Node.js 24 / Fastify / PostgreSQL, административный доступ и
+выдача Ссылок подписки по HTTPS через nginx, принятый протокол синхронизации
+Rust-агента. Исходный тикет:
+`../../uhuru-vpn-plan-v2/.scratch/uhuru-vpn-mvp/ticket-drafts/02-first-profile-happ.md`;
+истечение описано в `03-expire-subscription.md` того же каталога.
+Принятые контракты находятся в `MVP-SPEC.md` репозитория планирования.
+Файлы планирования и исходники существующего агента не изменялись.
 
 The first issuance locks the User and Nodes, takes PostgreSQL time after those
 locks, and commits the first Profile, 720-hour Subscription and desired snapshots
@@ -47,12 +49,14 @@ locks the User, then the shared enrollment/issuance row, then Nodes in ID order;
 only then does it read PostgreSQL time. `src/access-distribution.ts` owns that ordering
 and updates desired snapshots on the same database client, hiding snapshot details
 behind its seam. Its SQL remains in the owning repositories.
-Repositories never commit independently: Profile, Subscription and desired snapshots
-still commit together. Node enrollment obtains its initial Desired Access through
-Access Distribution under the same enrollment/issuance lock. Synchronization locks
-the Node before its sync state, validates ACK provenance against the previous sent
-snapshot, then records the new response in that same transaction. It never takes
-a User lock after a Node lock. Repeated ACKs retain the first confirmation time.
+Репозитории не завершают транзакции самостоятельно: Профиль, Подписка и desired
+по-прежнему фиксируются вместе. Регистрация Ноды получает начальный Желаемый
+доступ через Распределение доступа под общей блокировкой регистрации/выдачи.
+Синхронизация сначала блокирует Ноду, затем её sync-state, проверяет происхождение
+ACK по ранее отправленному снимку и записывает новый ответ в той же транзакции.
+Каждый опрос пересчитывает желаемый состав по времени PostgreSQL после обеих
+блокировок, до сравнения ревизий отчёта агента. Блокировка Пользователя после
+блокировки Ноды не запрашивается. Повторный ACK сохраняет время первого подтверждения.
 
 See [the domain glossary](CONTEXT.md). The HTTP-backend/PostgreSQL checks remain
 the behavioral test surface, alongside direct use-case checks for issuance and
@@ -83,6 +87,7 @@ TCP + REALITY + XTLS Vision candidate using the URI returned by this server.
 This does not establish public VPS routing or Happ compatibility.
 
 See [acceptance evidence and the manual Happ handoff](docs/acceptance.md).
+Для задачи 03 записаны [результаты истечения и оставшиеся проверки Happ](docs/verification/03-expire-subscription.md).
 
 ## Install on a dedicated Linux Control Plane
 
@@ -217,11 +222,26 @@ implemented. Confirmed/sent revisions never roll back; repeat ACKs preserve the
 first confirmation time. A verified current ACK returns compact `up_to_date`.
 The existing agent supplies the 15-second cadence and 5-second timeout/retry behavior.
 
-Automatic expiration of desired Xray membership, renewal, revocation operations,
-additional Profiles and multi-Node acceptance belong to tickets 03–07. The link
-already denies expired/revoked prepared data, but this slice alone does not revoke
-previously distributed access in Xray. Access remains experimental until subsequent
-acceptance. Restoring PostgreSQL never resets counters automatically; Q4 is open.
+В момент `ends_at` ссылка сразу перестаёт выдавать конфигурации. Каждый опрос
+агента удаляет истёкшие Профили из полного desired-снимка, включая пустой
+управляемый набор; неизменный состав сохраняет ревизию. Обращение к панели/ссылке
+не требуется. Агент сохраняет набор, применяет его через Xray API и проверяет
+до ACK без перезапуска Xray. Подписка, Профиль, UUID и секрет ссылки сохраняются,
+место в лимите не освобождается. Поздний ACK разрешения не восстанавливает ссылку.
+
+Администратор видит `status: expired` в списке Профилей отдельно от готовности
+Ноды. `desired_access: false` при историческом `ready: true` означает, что
+последнее подтверждение ещё разрешало доступ. Подтверждённое удаление требует
+снимка confirmed без Профиля **и** подтверждения последней desired-ревизии из
+`GET /admin/nodes`; одного старого подтверждения пустого состава недостаточно.
+При потере связи применение запрета остаётся неподтверждённым. Цель при исправной
+связи — отказ **новой** VLESS-аутентификации в пределах 60 секунд; старые
+соединения наблюдаются отдельно, без обещания их разрыва.
+
+Продление, операции отзыва, дополнительные Профили и приёмка нескольких Нод
+остаются в задачах 04–07. Физические проверки истечения/refresh в Happ на Android
+и iOS — **NOT RUN**. Восстановление PostgreSQL не сбрасывает счётчики автоматически;
+Q4 остаётся открытым.
 
 ## Storage and copies
 
