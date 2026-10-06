@@ -39,6 +39,7 @@ The Configuration Delivery module serves Subscription Links:
 
 - `src/delivery/delivery.router.ts` registers `/s/:secret`, validates the parameter shape with a schema and delegates `(req, reply)` to `DeliveryController`.
 - `src/delivery/controller.ts` contains `DeliveryController` with an injected `GetConfigurationsUseCase`. It validates the canonical secret and raw URL before database access and sends the successful text response after COMMIT.
+- `src/delivery/roscomvpn-default.json` pins RoscomVPN DEFAULT. `DeliveryController` imports the JSON, adapts its name, preserves the upstream CDN URLs for geo files, and builds the Routing header in `getConfigurations` after the use case completes. Geo files are downloaded by clients directly from the CDN: [deployment and client acceptance](docs/roscomvpn-routing.ru.md).
 - `src/delivery/useCases/getConfigurations/getConfigurations.useCase.ts` exposes `GetConfigurationsUseCase` with an injected pool and real `AuthorizeSubscriptionLinkUseCase` and `ListReadyNodesUseCase` instances. Its `execute({ linkSecret })` opens the read transaction with `transaction(pool, work)`, passes `{ tx }` through both nested use cases, authorizes the link, selects ready Nodes and formats the VLESS configurations. Data access stays in the owning modules' repositories; delivery has no tables of its own. One client preserves the existing isolation level, without promising one snapshot across successive SELECTs.
 
 Commercial Access and Nodes meet in Access Distribution instead of importing each other's enrollment operations.

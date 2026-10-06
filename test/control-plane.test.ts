@@ -114,6 +114,15 @@ async function request(method: string, path: string, payload?: unknown, auth: st
     });
 }
 
+function assertDeliveryError(
+    response: { status?: number; statusCode?: number; headers: Record<string, unknown> },
+    status: number,
+) {
+    assert.equal(response.status ?? response.statusCode, status);
+    assert.equal(response.headers.routing, undefined);
+    assert.equal(response.headers['profile-update-interval'], undefined);
+}
+
 async function dropResponse(path: string, payload?: unknown, auth = authorization) {
     await new Promise<void>((resolve, reject) => {
         const req = http.request(
@@ -630,7 +639,7 @@ test('only a sent and verified snapshot unlocks the profile, with stable first c
     const node = await registerNode();
     const profile = await issue();
 
-    assert.equal((await request('GET', profile.path, undefined, null)).status, 503);
+    assertDeliveryError(await request('GET', profile.path, undefined, null), 503);
 
     const pending = (await sync(node)).json();
 
@@ -639,7 +648,7 @@ test('only a sent and verified snapshot unlocks the profile, with stable first c
     assert.equal(pending.snapshot.users[0].profile_id, profile.first_profile_id);
     assert.equal(pending.desired.revision, '2');
     assert.equal((await sync(node, pending.desired)).json().ack_status, 'none');
-    assert.equal((await request('GET', profile.path, undefined, null)).status, 503);
+    assertDeliveryError(await request('GET', profile.path, undefined, null), 503);
 
     const accepted = (await sync(node, pending.desired, pending.desired)).json();
 
@@ -708,7 +717,7 @@ test('agent polls expire access without user requests and preserve the Profile a
 
     const denied = await request('GET', p.path, undefined, null);
 
-    assert.equal(denied.status, 403);
+    assertDeliveryError(denied, 403);
     assert.equal(denied.headers['cache-control'], 'no-store');
     assert.deepEqual(denied.json(), { error: 'request_rejected' });
 
@@ -739,7 +748,7 @@ test('agent polls expire access without user requests and preserve the Profile a
     assert.equal(confirmed.desired_access, false);
     assert.deepEqual(confirmed.confirmed, empty);
     assert.equal((await sync(node, active.desired, active.desired)).json().ack_status, 'ignored_stale');
-    assert.equal((await request('GET', p.path, undefined, null)).status, 403);
+    assertDeliveryError(await request('GET', p.path, undefined, null), 403);
     assert.deepEqual((await sync(node, empty, empty)).json().desired, empty);
 });
 
@@ -783,7 +792,7 @@ test('a poll waiting for a Node lock expires before accepting a previously sent 
         assert.equal(expired.status, 'snapshot');
         assert.equal(expired.desired.revision, '3');
         assert.deepEqual(expired.snapshot.users, []);
-        assert.equal((await request('GET', p.path, undefined, null)).status, 403);
+        assertDeliveryError(await request('GET', p.path, undefined, null), 403);
 
         const readiness = (await request('GET', `/admin/profiles/${p.first_profile_id}/readiness`)).json()[0];
 
@@ -821,6 +830,62 @@ test('configuration delivery works without HTTP and preserves URI encoding and r
     assert.equal(response.headers['content-type'], 'text/plain; charset=utf-8');
     assert.equal(response.headers['cache-control'], 'no-store');
     assert.equal(response.headers['referrer-policy'], 'no-referrer');
+    assert.equal(response.headers['profile-update-interval'], '24');
+    const routing = response.headers.routing;
+
+    assert.ok(typeof routing === 'string');
+    assert.ok(routing.startsWith('happ://routing/onadd/'));
+    const encoded = routing.slice('happ://routing/onadd/'.length);
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+
+    assert.equal(Buffer.from(decoded).toString('base64'), encoded);
+    assert.equal(JSON.stringify(JSON.parse(decoded)), decoded, 'routing JSON must be compact');
+    // Expected DEFAULT from upstream 2c1cb8673242a16e4b7b9d9aca83906dcf8cd252, with only the name adapted.
+    assert.deepEqual(JSON.parse(decoded), {
+        Name: 'Uhuru DEFAULT',
+        GlobalProxy: 'true',
+        UseChunkFiles: 'true',
+        RemoteDns: '8.8.8.8',
+        DomesticDns: '77.88.8.8',
+        RemoteDNSType: 'DoH',
+        RemoteDNSDomain: 'https://8.8.8.8/dns-query',
+        RemoteDNSIP: '8.8.8.8',
+        DomesticDNSType: 'DoH',
+        DomesticDNSDomain: 'https://77.88.8.8/dns-query',
+        DomesticDNSIP: '77.88.8.8',
+        Geoipurl: 'https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip@202610061012/release/geoip.dat',
+        Geositeurl: 'https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geosite@202610060735/release/geosite.dat',
+        LastUpdated: '1791281605',
+        DnsHosts: { 'lkfl2.nalog.ru': '213.24.64.175', 'lknpd.nalog.ru': '213.24.64.181' },
+        RouteOrder: 'block-proxy-direct',
+        DirectSites: [
+            'geosite:private',
+            'geosite:category-ru',
+            'geosite:whitelist',
+            'geosite:microsoft',
+            'geosite:apple',
+            'geosite:epicgames',
+            'geosite:riot',
+            'geosite:escapefromtarkov',
+            'geosite:steam',
+            'geosite:twitch',
+            'geosite:pinterest',
+            'geosite:faceit',
+        ],
+        DirectIp: ['geoip:private', 'geoip:direct'],
+        ProxySites: [
+            'geosite:google-play',
+            'geosite:github',
+            'geosite:twitch-ads',
+            'geosite:youtube',
+            'geosite:telegram',
+        ],
+        ProxyIp: [],
+        BlockSites: ['geosite:win-spy', 'geosite:torrent', 'geosite:category-ads'],
+        BlockIp: [],
+        DomainStrategy: 'IPIfNonMatch',
+        FakeDNS: 'false',
+    });
 
     const [line, trailing, extra] = body.split('\n');
 
@@ -847,7 +912,7 @@ test('configuration delivery works without HTTP and preserves URI encoding and r
 
     const escapedPath = '/s/%' + p.path.charCodeAt(3).toString(16) + p.path.slice(4);
 
-    assert.equal((await request('GET', escapedPath, undefined, null)).status, 404);
+    assertDeliveryError(await request('GET', escapedPath, undefined, null), 404);
 });
 
 test('configuration delivery releases its client and rejects a failed COMMIT before sending configurations', async () => {
@@ -915,7 +980,9 @@ test('configuration delivery releases its client and rejects a failed COMMIT bef
             profile.path + '?query=1',
             profile.path + '/',
         ]) {
-            assert.equal((await scopedApp.inject({ url })).statusCode, 404);
+            const rejected = await scopedApp.inject({ url });
+
+            assertDeliveryError(rejected, 404);
             assert.equal(scopedPool.totalCount, 0);
         }
 
@@ -936,19 +1003,23 @@ test('configuration delivery releases its client and rejects a failed COMMIT bef
             (error) => error instanceof AccessError && error.reason === 'not_found',
         );
 
-        assert.equal((await scopedApp.inject({ url: `/s/${unknown.toString('base64url')}` })).statusCode, 404);
+        const unknownResponse = await scopedApp.inject({ url: `/s/${unknown.toString('base64url')}` });
+
+        assertDeliveryError(unknownResponse, 404);
 
         await db.query('UPDATE nodes SET include_in_subscription=false WHERE id=$1', [node.id]);
         await assert.rejects(useCase.execute({ linkSecret }), { message: 'no_ready_nodes' });
 
-        assert.equal((await scopedApp.inject({ url: profile.path })).statusCode, 503);
+        const unavailable = await scopedApp.inject({ url: profile.path });
+
+        assertDeliveryError(unavailable, 503);
 
         await db.query('UPDATE nodes SET include_in_subscription=true WHERE id=$1', [node.id]);
         failCommit = true;
         await assert.rejects(useCase.execute({ linkSecret }), { message: 'injected_commit_failure' });
         const failed = await scopedApp.inject({ url: profile.path });
 
-        assert.equal(failed.statusCode, 503);
+        assertDeliveryError(failed, 503);
         assert.equal(failed.headers['retry-after'], '15');
         assert.deepEqual(failed.json(), { error: 'temporarily_unavailable' });
         assert.equal(scopedPool.totalCount, 1);
@@ -1153,7 +1224,7 @@ test('expired and revoked prepared profiles are never renewed or replaced by iss
 
     assert.equal(expired.status, 'expired');
     assert.ok(expired.link === p.link);
-    assert.equal((await request('GET', p.path, undefined, null)).status, 403);
+    assertDeliveryError(await request('GET', p.path, undefined, null), 403);
 
     await db.query('UPDATE access_profiles SET revoked_at=clock_timestamp() WHERE id=$1', [p.first_profile_id]);
 
@@ -1165,7 +1236,7 @@ test('expired and revoked prepared profiles are never renewed or replaced by iss
         assert.equal(result.first_profile_id, p.first_profile_id);
     }
 
-    assert.equal((await request('GET', p.path, undefined, null)).status, 410);
+    assertDeliveryError(await request('GET', p.path, undefined, null), 410);
 });
 
 test('Node use cases roll back a failed ACK commit and keep readiness separate from inclusion and access', async () => {
@@ -1223,7 +1294,7 @@ test('Node use cases roll back a failed ACK commit and keep readiness separate f
 
     await db.query('UPDATE nodes SET include_in_subscription=false WHERE id=$1', [node.id]);
 
-    assert.equal((await request('GET', p.path, undefined, null)).status, 503);
+    assertDeliveryError(await request('GET', p.path, undefined, null), 503);
 
     await db.query(
         `UPDATE subscriptions
@@ -1238,7 +1309,7 @@ test('Node use cases roll back a failed ACK commit and keep readiness separate f
     assert.equal(historical.desired_access, false);
     assert.equal(historical.include_in_subscription, false);
     assert.deepEqual(historical.confirmed_at, ready.confirmed_at);
-    assert.equal((await request('GET', p.path, undefined, null)).status, 403);
+    assertDeliveryError(await request('GET', p.path, undefined, null), 403);
 });
 
 test('node Bearer binds one node and rotates without overlap or resetting access', async () => {
@@ -1340,15 +1411,15 @@ test('canonical inputs and duplicate keys are rejected without revealing secrets
     const p = await issue();
 
     for (const suffix of ['=', '?x=1', '/']) {
-        assert.equal((await request('GET', p.path + suffix, undefined, null)).status, 404);
+        assertDeliveryError(await request('GET', p.path + suffix, undefined, null), 404);
     }
 
     const token = p.path.split('/').at(-1)!;
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
     const alias = token.slice(0, -1) + alphabet[alphabet.indexOf(token.at(-1)!) + 1];
 
-    assert.equal((await request('GET', `/s/${alias}`, undefined, null)).status, 404);
-    assert.equal((await request('GET', `/s/${randomBytes(32).toString('base64url')}`, undefined, null)).status, 404);
+    assertDeliveryError(await request('GET', `/s/${alias}`, undefined, null), 404);
+    assertDeliveryError(await request('GET', `/s/${randomBytes(32).toString('base64url')}`, undefined, null), 404);
 
     const body = `{"node_id":"${node.id}","saved":null,"verified":null,"error":null,"saved":null}`;
 
@@ -1409,7 +1480,7 @@ test('ACK provenance, all statuses and late diagnostics preserve monotone confir
 
     assert.equal(forgotten.ack_status, 'unrecognized');
     assert.equal(forgotten.status, 'snapshot');
-    assert.equal((await request('GET', p.path, undefined, null)).status, 503);
+    assertDeliveryError(await request('GET', p.path, undefined, null), 503);
 
     await dropResponse(
         '/agent/v1/sync',
@@ -1551,6 +1622,6 @@ test('prepared profile limits include every unrevoked profile and readiness requ
         { message: 'no_ready_nodes' },
     );
 
-    assert.equal((await request('GET', p.path, undefined, null)).status, 503);
+    assertDeliveryError(await request('GET', p.path, undefined, null), 503);
     assert.equal((await request('GET', `/admin/profiles/${p.first_profile_id}/readiness`)).json()[0].ready, false);
 });
