@@ -6,24 +6,24 @@
 
 ## Что получилось
 
-| Параметр | Значение при этом деплое |
-| --- | --- |
-| ОС и архитектура | Ubuntu 24.04.5 LTS, x86_64 |
-| Ресурсы | 1.9 GiB RAM, 511 MiB swap, диск 30 GiB |
-| Пользователь администратора | `ranko`, входит в группу `sudo` |
-| SSH | Вход по ключу, TCP `48222` |
-| Публичный IPv4 | `87.251.77.65` |
-| Домен | `control.uhuru.pro` |
-| DNS | A-запись на VPS, Cloudflare **DNS only**, без AAAA |
-| Репозиторий | Приватный `Ranko95/uhuru-control-plane`, ветка `main` |
-| Развёрнутый коммит | `1a9d8f6` — `add nvmrc and hostname` |
-| Каталог исходников | `/opt/uhuru`, владелец `root` |
-| Node.js / npm | `v24.21.0` / `11.19.0`, установка в `/usr/local` |
-| PostgreSQL | `16`, кластер `main`, база и роль `uhuru` |
-| Сервисный пользователь | `uhuru`, без домашнего каталога и входа в shell |
-| Настройки | `/etc/uhuru/settings.json`, `640 root:uhuru` |
-| systemd | `uhuru-control-plane.service`, автозапуск включён |
-| HTTPS | nginx + сертификат Let's Encrypt, продление через `certbot.timer` |
+| Параметр                    | Значение при этом деплое                                          |
+| --------------------------- | ----------------------------------------------------------------- |
+| ОС и архитектура            | Ubuntu 24.04.5 LTS, x86_64                                        |
+| Ресурсы                     | 1.9 GiB RAM, 511 MiB swap, диск 30 GiB                            |
+| Пользователь администратора | `ranko`, входит в группу `sudo`                                   |
+| SSH                         | Вход по ключу, TCP `48222`                                        |
+| Публичный IPv4              | `87.251.77.65`                                                    |
+| Домен                       | `control.uhuru.pro`                                               |
+| DNS                         | A-запись на VPS, Cloudflare **DNS only**, без AAAA                |
+| Репозиторий                 | Приватный `Ranko95/uhuru-control-plane`, ветка `main`             |
+| Развёрнутый коммит          | `1a9d8f6` — `add nvmrc and hostname`                              |
+| Каталог исходников          | `/opt/uhuru`, владелец `root`                                     |
+| Node.js / npm               | `v24.21.0` / `11.19.0`, установка в `/usr/local`                  |
+| PostgreSQL                  | `16`, кластер `main`, база и роль `uhuru`                         |
+| Сервисный пользователь      | `uhuru`, без домашнего каталога и входа в shell                   |
+| Настройки                   | `/etc/uhuru/settings.json`, `640 root:uhuru`                      |
+| systemd                     | `uhuru-control-plane.service`, автозапуск включён                 |
+| HTTPS                       | nginx + сертификат Let's Encrypt, продление через `certbot.timer` |
 
 Схема соединений:
 

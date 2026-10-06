@@ -102,6 +102,7 @@ class DeploymentTest(unittest.TestCase):
                                          'for tool; do command -v "$tool" || exit 1; done',
                                          '_', *commands], env={**os.environ, 'PATH': path},
                                         text=True, capture_output=True)
+
                 self.assertEqual(result.returncode, 0,
                                  script + ': administrative command missing from PATH: ' + repr(commands))
 
@@ -119,9 +120,12 @@ class DeploymentTest(unittest.TestCase):
         (config_dir / 'deploy.conf').write_text('AllowUsers uhuru-deploy\n')
         result = subprocess.run(['/usr/sbin/sshd', '-T', '-f', str(config)],
                                 text=True, capture_output=True)
+
         self.assertEqual(result.returncode, 0, result.stderr)
+
         users = [line.split()[1] for line in result.stdout.splitlines()
                  if line.startswith('allowusers ')]
+
         self.assertEqual(set(users), {'ranko', 'uhuru-deploy'})
 
     def setUp(self):
@@ -191,6 +195,7 @@ class DeploymentTest(unittest.TestCase):
 
     def test_success_prepares_dependencies_then_switches_and_keeps_previous(self):
         result = self.run_deploy('apply', self.new)
+
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.current.resolve().name, self.new)
         self.assertEqual((self.state / 'previous').read_text().strip(), self.old)
@@ -201,6 +206,7 @@ class DeploymentTest(unittest.TestCase):
 
     def test_dependency_failure_leaves_old_service_untouched(self):
         result = self.run_deploy('apply', self.new, NPM_FAIL='1')
+
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.current.resolve().name, self.old)
         self.assertEqual(self.calls('systemctl'), [])
@@ -208,6 +214,7 @@ class DeploymentTest(unittest.TestCase):
 
     def test_failed_start_restores_old_version_and_reports_failure(self):
         result = self.run_deploy('apply', self.new, FAIL_RELEASE=self.new)
+
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.current.resolve().name, self.old)
         self.assertIn('Restored ' + self.old, result.stdout)
@@ -215,6 +222,7 @@ class DeploymentTest(unittest.TestCase):
 
     def test_active_process_without_listener_is_not_a_successful_start(self):
         result = self.run_deploy('apply', self.new, NO_LISTENER=self.new)
+
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.current.resolve().name, self.old)
 
@@ -222,16 +230,20 @@ class DeploymentTest(unittest.TestCase):
         (self.repo / 'schema.sql').write_text('changed schema\n')
         sha = self.commit('schema change')
         result = self.run_deploy('apply', sha)
+
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('schema_changed', result.stderr)
         self.assertEqual(self.current.resolve().name, self.old)
         self.assertEqual(self.calls('runuser'), [])
+
         result = self.run_deploy('apply', sha, '--schema-reviewed')
+
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_superseded_commit_is_skipped(self):
         self.commit('newer')
         result = self.run_deploy('apply', self.new)
+
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Skipped superseded', result.stdout)
         self.assertEqual(self.current.resolve().name, self.old)
@@ -240,6 +252,7 @@ class DeploymentTest(unittest.TestCase):
     def test_push_during_dependency_install_is_skipped_before_switch(self):
         newer = self.commit('newer', push=False)
         result = self.run_deploy('apply', self.new, ADVANCE_MAIN=newer)
+
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Skipped superseded', result.stdout)
         self.assertEqual(self.current.resolve().name, self.old)
@@ -247,13 +260,16 @@ class DeploymentTest(unittest.TestCase):
 
     def test_server_lock_rejects_a_second_deployment(self):
         result = self.run_deploy('apply', self.new, LOCK_FAIL='1')
+
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.current.resolve().name, self.old)
         self.assertEqual(self.calls('runuser'), [])
 
     def test_manual_rollback_can_return_to_previous_release(self):
         self.assertEqual(self.run_deploy('apply', self.new).returncode, 0)
+
         result = self.run_deploy('restore')
+
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.current.resolve().name, self.old)
         self.assertEqual((self.state / 'previous').read_text().strip(), self.new)
@@ -261,10 +277,13 @@ class DeploymentTest(unittest.TestCase):
     def test_manual_rollback_across_sql_requires_separate_review(self):
         (self.repo / 'schema.sql').write_text('changed schema\n')
         sha = self.commit('schema change')
+
         self.assertEqual(self.run_deploy('apply', sha, '--schema-reviewed').returncode, 0)
         self.assertNotEqual(self.run_deploy('restore').returncode, 0)
         self.assertEqual(self.current.resolve().name, sha)
+
         result = self.run_deploy('restore', '--schema-reviewed')
+
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.current.resolve().name, self.old)
 
@@ -274,6 +293,7 @@ class DeploymentTest(unittest.TestCase):
         self.current.symlink_to(self.releases / self.new)
         (self.state / 'pending').write_text(self.old + '\n')
         result = self.run_deploy('recover')
+
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.current.resolve().name, self.old)
         self.assertFalse((self.state / 'pending').exists())
@@ -284,11 +304,17 @@ class DeploymentTest(unittest.TestCase):
                         'deploy ' + self.new + '\nid']:
             with self.subTest(command=command):
                 result = self.run_deploy('ssh', SSH_ORIGINAL_COMMAND=command)
+
                 self.assertNotEqual(result.returncode, 0)
+
         self.assertEqual(self.calls('systemd-run'), [])
+
         result = self.run_deploy('ssh', SSH_ORIGINAL_COMMAND='deploy ' + self.new)
+
         self.assertEqual(result.returncode, 0, result.stderr)
+
         launch = self.calls('systemd-run')[0]
+
         self.assertEqual(launch[-3:], ['/usr/local/sbin/uhuru-deploy', 'apply', self.new])
         self.assertIn('--property=ExecStopPost=/usr/local/sbin/uhuru-deploy recover', launch)
 
@@ -327,7 +353,9 @@ class DeploymentTest(unittest.TestCase):
         for _ in range(2):
             result = subprocess.run(['bash', str(setup), str(key) + '.pub'],
                                     env=env, text=True, capture_output=True)
+
             self.assertEqual(result.returncode, 0, result.stderr)
+
         self.assertEqual(self.current.resolve().name, self.old)
         self.assertTrue((self.repo / '.git').is_dir())
         self.assertEqual((self.current / 'node_modules/installed').read_text(), 'original dependencies')
@@ -338,10 +366,14 @@ class DeploymentTest(unittest.TestCase):
                                                  ['systemctl', 'daemon-reload']] * 2)
         self.assertEqual((self.root / 'etc/ssh/sshd_config.d/uhuru-deploy.conf').read_text(),
                          'AllowUsers uhuru-deploy\n')
+
         sudoers = (self.root / 'etc/sudoers.d/uhuru-deploy').read_text()
+
         self.assertIn('NOPASSWD: ' + str(sbin / 'uhuru-deploy') + ' ssh\n', sudoers)
         self.assertNotIn('*', sudoers)
+
         authorized = (self.root / 'var/lib/uhuru-deploy/.ssh/authorized_keys').read_text()
+
         self.assertTrue(authorized.startswith('restrict,command="/usr/bin/sudo -n '))
         self.assertIn(' uhuru-deploy ssh" ssh-ed25519 ', authorized.replace(str(sbin) + '/', ''))
 

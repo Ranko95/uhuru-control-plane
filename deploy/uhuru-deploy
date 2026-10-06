@@ -13,8 +13,15 @@ current=/opt/uhuru
 state=/var/lib/uhuru-deploy-state
 service=uhuru-control-plane.service
 
-fail() { printf '%s\n' "$1" >&2; exit 1; }
-valid_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+fail() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
+
+valid_sha() {
+  [[ "$1" =~ ^[0-9a-f]{40}$ ]]
+}
+
 [[ $(id -u) == 0 ]] || fail root_required
 
 # systemd owns the process lifetime, including recovery if it is killed mid-switch.
@@ -59,15 +66,18 @@ flock -n 9 || fail deployment_already_running
 release_sha() {
   local target
   target=$(readlink -f "$current")
+
   [[ "$target" == "$releases/"* ]] || fail invalid_current_release
   local sha=${target##*/}
   valid_sha "$sha" && [[ "$target" == "$releases/$sha" && -d "$target" ]] \
     || fail invalid_current_release
+
   printf '%s\n' "$sha"
 }
 
 switch_to() {
   valid_sha "$1" && [[ -d "$releases/$1" ]] || fail invalid_release
+
   ln -s "$releases/$1" "$current.next"
   mv -Tf "$current.next" "$current"
 }
@@ -75,26 +85,38 @@ switch_to() {
 started() {
   # Operational startup only; HTTP/business verification is performed by the operator.
   local stable=0 pid=0 next_pid attempt deadline=$((SECONDS + 15))
+
   for ((attempt=0; attempt<15 && SECONDS<deadline; attempt++)); do
     next_pid=$(systemctl show "$service" -p MainPID --value)
     if systemctl is-active --quiet "$service" && [[ "$next_pid" =~ ^[1-9][0-9]*$ ]] \
       && timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' 2>/dev/null; then
-      if [[ "$pid" == "$next_pid" ]]; then stable=$((stable + 1)); else stable=1; fi
+      if [[ "$pid" == "$next_pid" ]]; then
+        stable=$((stable + 1))
+      else
+        stable=1
+      fi
+
       pid=$next_pid
-      if ((stable >= 5)); then return 0; fi
+
+      if ((stable >= 5)); then
+        return 0
+      fi
     else
       stable=0
     fi
     sleep 1
   done
+
   return 1
 }
 
 recover() {
   [[ -f "$state/pending" ]] || return 0
+
   local old
   old=$(cat "$state/pending")
   valid_sha "$old" || fail invalid_recovery_release
+
   printf 'Restoring %s\n' "$old"
   rm -f "$current.next"
   switch_to "$old"
@@ -107,10 +129,15 @@ recover() {
   fi
 }
 
-[[ ${1:-} != recover ]] || { recover; exit; }
+[[ ${1:-} != recover ]] || {
+  recover
+  exit
+}
+
 # Recover an interrupted earlier deployment before accepting another one.
 recover
 old=$(release_sha)
+
 if [[ $1 == restore ]]; then
   [[ -f "$state/previous" ]] || fail no_previous_release
   sha=$(cat "$state/previous")
@@ -123,12 +150,20 @@ else
   sha=$2
   git -C "$repo" fetch --quiet origin main
   tip=$(git -C "$repo" rev-parse refs/remotes/origin/main)
-  if [[ "$sha" != "$tip" ]]; then printf 'Skipped superseded commit %s\n' "$sha"; exit 0; fi
+  if [[ "$sha" != "$tip" ]]; then
+    printf 'Skipped superseded commit %s\n' "$sha"
+    exit 0
+  fi
+
   if [[ "${3:-}" != --schema-reviewed ]]; then
     git -C "$repo" diff --quiet "$old" "$sha" -- '*.sql' \
       || fail 'schema_changed: update the database separately, then deploy with --schema-reviewed'
   fi
-  if [[ "$sha" == "$old" ]]; then printf 'Already deployed %s\n' "$sha"; exit 0; fi
+  if [[ "$sha" == "$old" ]]; then
+    printf 'Already deployed %s\n' "$sha"
+    exit 0
+  fi
+
   if [[ ! -d "$releases/$sha" ]]; then
     staging=$(mktemp -d "$releases/.prepare.XXXXXX")
     trap 'rm -rf "${staging:-}"' EXIT
@@ -141,29 +176,37 @@ else
     mv "$staging" "$releases/$sha"
     trap - EXIT
   fi
+
   # A newer push while npm was installing makes this checked commit obsolete.
   git -C "$repo" fetch --quiet origin main
   if [[ "$sha" != $(git -C "$repo" rev-parse refs/remotes/origin/main) ]]; then
-    printf 'Skipped superseded commit %s\n' "$sha"; exit 0
+    printf 'Skipped superseded commit %s\n' "$sha"
+    exit 0
   fi
 fi
 
 printf '%s\n' "$old" > "$state/pending"
+
 on_exit() {
   local status=$?
   trap - EXIT HUP INT TERM
+
   if [[ -f "$state/pending" ]]; then
     # ExecStopPost retries recovery if this attempt also fails.
     recover || true
     ((status != 0)) || status=1
   fi
+
   exit "$status"
 }
+
 trap on_exit EXIT
 trap 'exit 1' HUP INT TERM
+
 printf 'Switching %s -> %s\n' "$old" "$sha"
 switch_to "$sha"
 timeout 25 systemctl restart "$service" && started || fail startup_failed
+
 printf '%s\n' "$old" > "$state/previous.next"
 mv -f "$state/previous.next" "$state/previous"
 rm -f "$state/pending"

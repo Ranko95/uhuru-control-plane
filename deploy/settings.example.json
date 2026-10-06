@@ -1,7 +1,7 @@
 {
-  "origin": "https://control.example.com",
-  "port": 8080,
-  "database_socket": "/var/run/postgresql",
-  "admin_username": "admin",
-  "admin_password": "REPLACE_WITH_A_RANDOM_PASSWORD"
+    "origin": "https://control.example.com",
+    "port": 8080,
+    "database_socket": "/var/run/postgresql",
+    "admin_username": "admin",
+    "admin_password": "REPLACE_WITH_A_RANDOM_PASSWORD"
 }

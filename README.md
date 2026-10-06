@@ -67,6 +67,8 @@ delivery. Delivery checks also cover URI encoding and response headers.
 
 ```sh
 npm ci --ignore-scripts
+npm run lint
+npm run format:check
 npm run typecheck
 npm test
 sh stand/run.sh ../node-agent
@@ -76,6 +78,12 @@ sh stand/run.sh ../node-agent
 runs real loopback HTTP tests using a restricted application role, then removes the cluster.
 PostgreSQL `initdb`/`pg_ctl` must be on PATH (Homebrew PostgreSQL 18 is detected).
 The native Node test runner accepts filters, e.g. `npm test -- --test-name-pattern='ACK'`.
+
+Use `npm run format` to apply Prettier and `npm run lint -- --fix` to apply ESLint fixes.
+Keep `printWidth: 120`, use braces for every branch and loop, and declare one variable per statement.
+Separate neighboring functions and logical phases with a blank line: read data, validate, change state, return a result.
+Keep related instructions together. ESLint enforces structural separators; the phase boundaries need a manual check.
+Write complex SQL as multiline queries and keep Python and shell files readable manually.
 
 The stand builds the existing Rust agent and pinned Xray v26.5.9, then adds this
 Control Plane, nginx and PostgreSQL. It uses an ARM64 private privileged systemd container,
@@ -176,13 +184,13 @@ Node registration accepts the following **public connection candidate**:
 
 ```json
 {
-  "inbound_tag": "vless",
-  "host": "vpn.example.com",
-  "port": 443,
-  "server_name": "chosen-reality-target.example",
-  "public_key": "<canonical 43-character REALITY public key>",
-  "short_id": "abcd",
-  "fingerprint": "chrome"
+    "inbound_tag": "vless",
+    "host": "vpn.example.com",
+    "port": 443,
+    "server_name": "chosen-reality-target.example",
+    "public_key": "<canonical 43-character REALITY public key>",
+    "short_id": "abcd",
+    "fingerprint": "chrome"
 }
 ```
 
