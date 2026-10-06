@@ -4,15 +4,14 @@ import type { Pool } from 'pg';
 
 import { HttpError, parseJson } from './protocol.ts';
 import { digest } from './secrets.ts';
+import { AccessDistribution } from './access-distribution.ts';
 
 import { DeliveryController } from './delivery/controller.ts';
 import { deliveryRouter } from './delivery/delivery.router.ts';
-import { DeliveryUnitOfWork } from './delivery/unit-of-work.ts';
 import { GetConfigurationsUseCase } from './delivery/useCases/getConfigurations/getConfigurations.useCase.ts';
 import { AccessController } from './access/controller.ts';
 import { accessRouter } from './access/access.router.ts';
 import { AccessRepository } from './access/repository.ts';
-import { AccessUnitOfWork } from './access/unit-of-work.ts';
 import { AccessError } from './access/error.ts';
 import { CreateUserUseCase } from './access/useCases/createUser/createUser.useCase.ts';
 import { ListUsersUseCase } from './access/useCases/listUsers/listUsers.useCase.ts';
@@ -21,15 +20,16 @@ import { IssueFirstProfileUseCase } from './access/useCases/issueFirstProfile/is
 import { ShowProfileLinkUseCase } from './access/useCases/showProfileLink/showProfileLink.useCase.ts';
 import { ListProfilesUseCase } from './access/useCases/listProfiles/listProfiles.useCase.ts';
 import { GetProfileAccessUseCase } from './access/useCases/getProfileAccess/getProfileAccess.useCase.ts';
+import { AuthorizeSubscriptionLinkUseCase } from './access/useCases/authorizeSubscriptionLink/authorizeSubscriptionLink.useCase.ts';
 import { NodesController, NodesAgentController } from './nodes/controller.ts';
 import { nodesRouter, nodesAgentRouter } from './nodes/nodes.router.ts';
 import { NodesRepository } from './nodes/repository.ts';
-import { NodesUnitOfWork } from './nodes/unit-of-work.ts';
 import { ListNodesUseCase } from './nodes/useCases/listNodes/listNodes.useCase.ts';
 import { RegisterNodeUseCase } from './nodes/useCases/registerNode/registerNode.useCase.ts';
 import { RotateBearerUseCase } from './nodes/useCases/rotateBearer/rotateBearer.useCase.ts';
 import { GetProfileReadinessUseCase } from './nodes/useCases/getProfileReadiness/getProfileReadiness.useCase.ts';
 import { SynchronizeUseCase } from './nodes/useCases/synchronize/synchronize.useCase.ts';
+import { ListReadyNodesUseCase } from './nodes/useCases/listReadyNodes/listReadyNodes.useCase.ts';
 import { NodeError } from './nodes/error.ts';
 
 export function buildApp(options: { pool: Pool; origin: string; adminUsername: string; adminPassword: string }) {
@@ -52,28 +52,34 @@ export function buildApp(options: { pool: Pool; origin: string; adminUsername: s
     const { pool } = options;
 
     const accessRepository = new AccessRepository(pool);
-    const accessUnitOfWork = new AccessUnitOfWork(pool);
+    const nodesRepository = new NodesRepository(pool);
+    const accessDistribution = new AccessDistribution(nodesRepository, accessRepository);
     const accessController = new AccessController(
         new CreateUserUseCase(accessRepository),
         new ListUsersUseCase(accessRepository),
         new GetPlanUseCase(accessRepository),
-        new IssueFirstProfileUseCase(accessUnitOfWork, origin.origin),
-        new ShowProfileLinkUseCase(accessUnitOfWork, origin.origin),
+        new IssueFirstProfileUseCase(pool, accessRepository, accessDistribution, origin.origin),
+        new ShowProfileLinkUseCase(pool, accessRepository, origin.origin),
         new ListProfilesUseCase(accessRepository),
     );
     const getProfileAccessUseCase = new GetProfileAccessUseCase(accessRepository);
 
-    const nodesRepository = new NodesRepository(pool);
-    const nodesUnitOfWork = new NodesUnitOfWork(pool);
-
     const nodesController = new NodesController(
         new ListNodesUseCase(nodesRepository),
-        new RegisterNodeUseCase(nodesUnitOfWork),
+        new RegisterNodeUseCase(pool, accessDistribution),
         new RotateBearerUseCase(nodesRepository),
         new GetProfileReadinessUseCase(nodesRepository, getProfileAccessUseCase),
     );
-    const nodesAgentController = new NodesAgentController(new SynchronizeUseCase(nodesUnitOfWork));
-    const deliveryController = new DeliveryController(new GetConfigurationsUseCase(new DeliveryUnitOfWork(pool)));
+    const nodesAgentController = new NodesAgentController(
+        new SynchronizeUseCase(pool, nodesRepository, accessDistribution),
+    );
+    const deliveryController = new DeliveryController(
+        new GetConfigurationsUseCase(
+            pool,
+            new AuthorizeSubscriptionLinkUseCase(accessRepository),
+            new ListReadyNodesUseCase(nodesRepository),
+        ),
+    );
 
     const adminHash = digest(
         `Basic ${Buffer.from(`${options.adminUsername}:${options.adminPassword}`).toString('base64')}`,

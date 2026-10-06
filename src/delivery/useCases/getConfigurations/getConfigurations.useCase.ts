@@ -1,18 +1,30 @@
-import type { DeliveryUnitOfWork } from '../../unit-of-work.ts';
+import type { Pool } from 'pg';
+import { transaction } from '../../../database.ts';
+import type { AuthorizeSubscriptionLinkUseCase } from '../../../access/useCases/authorizeSubscriptionLink/authorizeSubscriptionLink.useCase.ts';
+import type { ListReadyNodesUseCase } from '../../../nodes/useCases/listReadyNodes/listReadyNodes.useCase.ts';
 
 export type GetConfigurationsDto = { linkSecret: Buffer };
 
 export class GetConfigurationsUseCase {
-    private readonly unitOfWork: Pick<DeliveryUnitOfWork, 'transaction'>;
+    private readonly pool: Pool;
+    private readonly authorizeSubscriptionLinkUseCase: Pick<AuthorizeSubscriptionLinkUseCase, 'execute'>;
+    private readonly listReadyNodesUseCase: Pick<ListReadyNodesUseCase, 'execute'>;
 
-    constructor(unitOfWork: Pick<DeliveryUnitOfWork, 'transaction'>) {
-        this.unitOfWork = unitOfWork;
+    constructor(
+        pool: Pool,
+        authorizeSubscriptionLinkUseCase: Pick<AuthorizeSubscriptionLinkUseCase, 'execute'>,
+        listReadyNodesUseCase: Pick<ListReadyNodesUseCase, 'execute'>,
+    ) {
+        this.pool = pool;
+        this.authorizeSubscriptionLinkUseCase = authorizeSubscriptionLinkUseCase;
+        this.listReadyNodesUseCase = listReadyNodesUseCase;
     }
 
     execute(dto: GetConfigurationsDto): Promise<string> {
-        return this.unitOfWork.transaction(async ({ authorizeSubscriptionLinkUseCase, listReadyNodesUseCase }) => {
-            const profile = await authorizeSubscriptionLinkUseCase.execute(dto);
-            const readyNodes = await listReadyNodesUseCase.execute(profile);
+        return transaction(this.pool, async (tx) => {
+            const options = { tx };
+            const profile = await this.authorizeSubscriptionLinkUseCase.execute(dto, options);
+            const readyNodes = await this.listReadyNodesUseCase.execute(profile, options);
             const configs = [];
 
             for (const node of readyNodes) {

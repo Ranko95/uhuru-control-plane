@@ -21,28 +21,25 @@ The Commercial Access module owns Users, the Plan, Subscriptions and Access Prof
 - `src/access/access.router.ts` registers routes, validates parameters with schemas and delegates `(req, reply)` to `AccessController`. It inherits the administrative authentication hook.
 - `src/access/controller.ts` contains `AccessController`: it reads and normalizes input, invokes injected use-case instances and sends responses after completion.
 - `src/access/useCases/*/*.useCase.ts` exposes classes with constructor dependencies and `execute(dto)` for commercial decisions, first issuance, repeat link display and internal access checks for readiness and configuration delivery. Link-producing use cases receive `origin` through their constructors. Domain errors from `src/access/error.ts` are mapped to HTTP in `src/app.ts`; `src/access/profile.ts` shares status and link formatting functions.
-- `src/access/repository.ts` provides `AccessRepository(db: Pool | PoolClient)` for commercial data. SQL time comparisons preserve PostgreSQL precision; use cases decide commercial statuses, the profile limit and the issued term. Nontransactional operations use the pool.
-- `src/access/unit-of-work.ts` provides `AccessUnitOfWork(pool)`. First issuance and repeat link display open a transaction through it; `AccessRepository` and `AccessDistribution` with `NodesRepository` share the same client.
+- `src/access/repository.ts` provides `AccessRepository(db: Pool | PoolClient)` for commercial data. SQL time comparisons preserve PostgreSQL precision; use cases decide commercial statuses, the profile limit and the issued term. Transactional queries receive `options.tx`; ordinary queries use the injected database.
 
 The Node module exposes Node registration and owns Bearer rotation, synchronization and observed readiness:
 
 - `src/nodes/nodes.router.ts` registers administrative and agent routes, validates parameters with schemas and delegates `(req, reply)` to controller methods. Administrative routes inherit Basic Auth; the agent uses its own Bearer.
 - `src/nodes/controller.ts` contains `NodesController` and `NodesAgentController`. They read the request, decode and validate canonical secrets, normalize input, invoke injected use-case instances and send the HTTP response after completion.
 - `src/nodes/useCases/*/*.useCase.ts` exposes classes with constructor dependencies and `execute(dto)` for registration, Bearer rotation, Node authentication, ACK decisions and public diagnostics. Domain errors from `src/nodes/error.ts` are mapped to HTTP only in `src/app.ts`.
-- `src/nodes/repository.ts` provides `NodesRepository(db: Pool | PoolClient)` for all reads and writes of `nodes` and `node_sync`. Reads and single-statement Bearer rotation use the pool; transactional operations use a dedicated client.
-- `src/nodes/unit-of-work.ts` provides `NodesUnitOfWork(pool)`. Registration and synchronization open a transaction through it; `NodesRepository`, `AccessRepository` and `AccessDistribution` share the same client.
+- `src/nodes/repository.ts` provides `NodesRepository(db: Pool | PoolClient)` for all reads and writes of `nodes` and `node_sync`. Reads and single-statement Bearer rotation use the pool; transactional queries receive `options.tx` without changing the repository's injected database.
 - `src/nodes/readiness.ts` checks the confirmed snapshot and exact Profile ID/credential pair once for both administrative readiness and configuration delivery. Historical readiness remains separate from desired access and inclusion in subscriptions.
 
 The Access Distribution module coordinates Commercial Access changes with Nodes:
 
-- `src/access-distribution.ts` provides `AccessDistribution` with injected Node and Commercial Access repositories. Its `distributeAccessChange`, `refreshNodeAccess` and `enrollNode` methods accept DTOs and own issuance serialization, ordered Node locking, PostgreSQL time selection, desired snapshot updates and initial Node enrollment. It is assembled inside each transaction, including first issuance, and leaves transaction completion to the caller. Commercial decisions remain in the Commercial Access module; synchronization remains in the Node module.
+- `src/access-distribution.ts` provides `AccessDistribution` with injected Node and Commercial Access repositories. Its `distributeAccessChange`, `refreshNodeAccess` and `enrollNode` methods accept DTOs and required `{ tx }` options and own issuance serialization, ordered Node locking, PostgreSQL time selection, desired snapshot updates and initial Node enrollment. It is assembled once in `src/app.ts` and leaves transaction completion to the caller. Commercial decisions remain in the Commercial Access module; synchronization remains in the Node module.
 
 The Configuration Delivery module serves Subscription Links:
 
 - `src/delivery/delivery.router.ts` registers `/s/:secret`, validates the parameter shape with a schema and delegates `(req, reply)` to `DeliveryController`.
 - `src/delivery/controller.ts` contains `DeliveryController` with an injected `GetConfigurationsUseCase`. It validates the canonical secret and raw URL before database access and sends the successful text response after COMMIT.
-- `src/delivery/useCases/getConfigurations/getConfigurations.useCase.ts` exposes `GetConfigurationsUseCase` with constructor DI and `execute({ linkSecret })`. It opens the read transaction through `DeliveryUnitOfWork`, authorizes the link, selects ready Nodes and formats the VLESS configurations.
-- `src/delivery/unit-of-work.ts` provides `DeliveryUnitOfWork(pool)`. It injects real `AuthorizeSubscriptionLinkUseCase` and `ListReadyNodesUseCase` instances into the operation's transaction scope, with `AccessRepository` and `NodesRepository` on the same client. Data access stays in the owning modules' repositories; delivery has no tables of its own.
+- `src/delivery/useCases/getConfigurations/getConfigurations.useCase.ts` exposes `GetConfigurationsUseCase` with an injected pool and real `AuthorizeSubscriptionLinkUseCase` and `ListReadyNodesUseCase` instances. Its `execute({ linkSecret })` opens the read transaction with `transaction(pool, work)`, passes `{ tx }` through both nested use cases, authorizes the link, selects ready Nodes and formats the VLESS configurations. Data access stays in the owning modules' repositories; delivery has no tables of its own. One client preserves the existing isolation level, without promising one snapshot across successive SELECTs.
 
 Commercial Access and Nodes meet in Access Distribution instead of importing each other's enrollment operations.
 `src/secrets.ts` shares token decoding and hashing independently of HTTP;
@@ -51,15 +48,22 @@ assembles the modules and configures administrative authentication,
 JSON parsing, response headers and sanitized error handling.
 It constructs real use-case instances and injects them into controllers.
 Readiness receives `GetProfileAccessUseCase` directly. Configuration Delivery receives
-its authorization and readiness use cases inside the transaction scope.
-The pool-backed repositories and units of work hold no checked-out client between calls.
-Each use case accepts one typed operation DTO; repositories receive the database only in their constructors.
+its authorization and readiness use cases through the constructor.
+The pool-backed repositories and Access Distribution are assembled once and hold no checked-out client between calls.
+Each use case accepts one typed operation DTO. Internal operations that join the caller's
+transaction receive technical options separately from that DTO.
+`src/database.ts` defines `QueryOptions = { tx?: PoolClient }` for participating queries,
+which select `options.tx ?? this.db`, and `TransactionOptions = { tx: PoolClient }` for
+explicit locks and Access Distribution operations. Optional query options default to `{}`;
+required transaction options have no default. `profileLink` and the two nested delivery
+use cases pass options through without opening another transaction.
 Controllers, use cases and repositories now use classes throughout, with no functional compatibility adapters.
 Readiness, snapshot, secret, validation and profile helpers remain functions; `profileLink` stays a shared helper.
 Controller validation precedes database access. First issuance, repeat link display,
 registration, synchronization and configuration delivery use the existing `transaction` helper through
-their module's unit of work; their responses follow COMMIT.
-Each parallel transaction acquires its own client and creates its dependencies in that operation's scope.
+their `execute` methods; their responses follow COMMIT.
+Each parallel transaction acquires its own client and passes the same `{ tx }` to every
+participating query. Repositories and use cases never retain that client after the callback.
 The shared helper releases the client after success, an operation error or a failed COMMIT.
 Pool queries release their clients automatically.
 

@@ -1,6 +1,7 @@
 import { AccessError } from '../../error.ts';
 import { status } from '../../profile.ts';
 import type { AccessRepository } from '../../repository.ts';
+import type { QueryOptions } from '../../../database.ts';
 
 export type AuthorizeSubscriptionLinkDto = { linkSecret: Buffer };
 
@@ -11,8 +12,8 @@ export class AuthorizeSubscriptionLinkUseCase {
         this.repository = repository;
     }
 
-    async execute(dto: AuthorizeSubscriptionLinkDto) {
-        const profile = await this.repository.readProfileBySecret(dto.linkSecret);
+    async execute(dto: AuthorizeSubscriptionLinkDto, options: QueryOptions = {}) {
+        const profile = await this.repository.readProfileBySecret(dto.linkSecret, options);
 
         if (!profile) {
             throw new AccessError('not_found');

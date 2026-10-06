@@ -1,6 +1,8 @@
 import type { Pool, PoolClient } from 'pg';
 
 export type Database = Pool | PoolClient;
+export type QueryOptions = { tx?: PoolClient };
+export type TransactionOptions = { tx: PoolClient };
 
 export async function transaction<T>(pool: Pool, work: (db: PoolClient) => Promise<T>): Promise<T> {
     const db = await pool.connect();

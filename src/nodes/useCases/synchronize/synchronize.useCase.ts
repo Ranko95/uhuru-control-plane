@@ -1,24 +1,37 @@
 import { timingSafeEqual } from 'node:crypto';
+import type { Pool } from 'pg';
+import { transaction } from '../../../database.ts';
+import type { AccessDistribution } from '../../../access-distribution.ts';
 import { digest } from '../../../secrets.ts';
 import { checked, maxRevision, same, state } from '../../../snapshot.ts';
 import type { StoredSnapshot } from '../../../snapshot.ts';
-import type { NodesUnitOfWork } from '../../unit-of-work.ts';
+import type { NodesRepository } from '../../repository.ts';
 import { NodeError } from '../../error.ts';
 import type { Report } from '../../model.ts';
 
 export type SynchronizeDto = { bearer: Buffer; report: Report };
 
 export class SynchronizeUseCase {
-    private readonly unitOfWork: Pick<NodesUnitOfWork, 'transaction'>;
+    private readonly pool: Pool;
+    private readonly repository: Pick<NodesRepository, 'lockNodeBySecretHash' | 'lockSyncState' | 'writeSyncResult'>;
+    private readonly accessDistribution: Pick<AccessDistribution, 'refreshNodeAccess'>;
 
-    constructor(unitOfWork: Pick<NodesUnitOfWork, 'transaction'>) {
-        this.unitOfWork = unitOfWork;
+    constructor(
+        pool: Pool,
+        repository: Pick<NodesRepository, 'lockNodeBySecretHash' | 'lockSyncState' | 'writeSyncResult'>,
+        accessDistribution: Pick<AccessDistribution, 'refreshNodeAccess'>,
+    ) {
+        this.pool = pool;
+        this.repository = repository;
+        this.accessDistribution = accessDistribution;
     }
 
     execute(dto: SynchronizeDto) {
-        return this.unitOfWork.transaction(async ({ repository, accessDistribution }) => {
+        return transaction(this.pool, async (tx) => {
+            const options = { tx };
+            const { repository, accessDistribution } = this;
             const hash = digest(dto.bearer);
-            const node = await repository.lockNodeBySecretHash(hash);
+            const node = await repository.lockNodeBySecretHash(hash, options);
 
             if (!node || !timingSafeEqual(hash, node.agent_secret_hash)) {
                 throw new NodeError('unauthorized');
@@ -38,7 +51,7 @@ export class SynchronizeUseCase {
                 throw new NodeError('invalid_report');
             }
 
-            const row = await repository.lockSyncState(node.id);
+            const row = await repository.lockSyncState(node.id, options);
             let desired = checked(row.desired_snapshot, node.id, node.public_connection.inbound_tag);
             const sent = row.sent_snapshot && checked(row.sent_snapshot, node.id, node.public_connection.inbound_tag);
             let confirmed =
@@ -58,9 +71,10 @@ export class SynchronizeUseCase {
                 }
             }
 
-            desired = await accessDistribution.refreshNodeAccess({
-                node: { ...node, desired_snapshot: desired },
-            });
+            desired = await accessDistribution.refreshNodeAccess(
+                { node: { ...node, desired_snapshot: desired } },
+                options,
+            );
             knownSnapshots[0] = desired;
 
             for (const ref of [dto.report.saved, dto.report.verified]) {
@@ -99,12 +113,16 @@ export class SynchronizeUseCase {
             const upToDate = same(dto.report.verified, desired) && ['accepted', 'already_confirmed'].includes(ack);
 
             // ACK provenance is checked against the previous sent snapshot before recording this response.
-            await repository.writeSyncResult(node.id, {
-                confirmed,
-                newlyConfirmed: ack === 'accepted',
-                sent: upToDate ? sent : desired,
-                report: dto.report,
-            });
+            await repository.writeSyncResult(
+                node.id,
+                {
+                    confirmed,
+                    newlyConfirmed: ack === 'accepted',
+                    sent: upToDate ? sent : desired,
+                    report: dto.report,
+                },
+                options,
+            );
 
             return {
                 status: upToDate ? 'up_to_date' : 'snapshot',

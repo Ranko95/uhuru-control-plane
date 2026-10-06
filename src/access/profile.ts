@@ -1,5 +1,6 @@
 import { AccessError } from './error.ts';
 import type { AccessRepository, AccessState } from './repository.ts';
+import type { QueryOptions } from '../database.ts';
 
 export function status(value: AccessState) {
     if (value.revoked_at) {
@@ -13,8 +14,9 @@ export async function profileLink(
     repository: Pick<AccessRepository, 'readProfileLink'>,
     profileId: string,
     origin: string,
+    options: QueryOptions = {},
 ) {
-    const profile = await repository.readProfileLink(profileId);
+    const profile = await repository.readProfileLink(profileId, options);
 
     if (!profile) {
         throw new AccessError('not_found');

@@ -11,19 +11,18 @@ import { ShowProfileLinkUseCase } from '../src/access/useCases/showProfileLink/s
 import { ListProfilesUseCase } from '../src/access/useCases/listProfiles/listProfiles.useCase.ts';
 import { GetProfileAccessUseCase } from '../src/access/useCases/getProfileAccess/getProfileAccess.useCase.ts';
 import { AccessRepository } from '../src/access/repository.ts';
-import { AccessUnitOfWork } from '../src/access/unit-of-work.ts';
+import { AuthorizeSubscriptionLinkUseCase } from '../src/access/useCases/authorizeSubscriptionLink/authorizeSubscriptionLink.useCase.ts';
 import { IssueFirstProfileUseCase } from '../src/access/useCases/issueFirstProfile/issueFirstProfile.useCase.ts';
 import { AccessDistribution } from '../src/access-distribution.ts';
 import { transaction } from '../src/database.ts';
 import { NodeError } from '../src/nodes/error.ts';
 import type { Report } from '../src/nodes/model.ts';
 import { NodesRepository } from '../src/nodes/repository.ts';
-import { NodesUnitOfWork } from '../src/nodes/unit-of-work.ts';
+import { ListReadyNodesUseCase } from '../src/nodes/useCases/listReadyNodes/listReadyNodes.useCase.ts';
 import { RegisterNodeUseCase } from '../src/nodes/useCases/registerNode/registerNode.useCase.ts';
 import { RotateBearerUseCase } from '../src/nodes/useCases/rotateBearer/rotateBearer.useCase.ts';
 import { GetProfileReadinessUseCase } from '../src/nodes/useCases/getProfileReadiness/getProfileReadiness.useCase.ts';
 import { SynchronizeUseCase } from '../src/nodes/useCases/synchronize/synchronize.useCase.ts';
-import { DeliveryUnitOfWork } from '../src/delivery/unit-of-work.ts';
 import { GetConfigurationsUseCase } from '../src/delivery/useCases/getConfigurations/getConfigurations.useCase.ts';
 
 const db = new pg.Pool({
@@ -38,18 +37,26 @@ const pool = new pg.Pool({
 });
 const nodesRepository = new NodesRepository(pool);
 const accessRepository = new AccessRepository(pool);
-const accessUnitOfWork = new AccessUnitOfWork(pool);
+const accessDistribution = new AccessDistribution(nodesRepository, accessRepository);
 const createUserUseCase = new CreateUserUseCase(accessRepository);
-const issueFirstProfileUseCase = new IssueFirstProfileUseCase(accessUnitOfWork, 'https://localhost');
-const showProfileLinkUseCase = new ShowProfileLinkUseCase(accessUnitOfWork, 'https://localhost');
+const issueFirstProfileUseCase = new IssueFirstProfileUseCase(
+    pool,
+    accessRepository,
+    accessDistribution,
+    'https://localhost',
+);
+const showProfileLinkUseCase = new ShowProfileLinkUseCase(pool, accessRepository, 'https://localhost');
 const listProfilesUseCase = new ListProfilesUseCase(accessRepository);
 const getProfileAccessUseCase = new GetProfileAccessUseCase(accessRepository);
-const nodesUnitOfWork = new NodesUnitOfWork(pool);
-const registerNodeUseCase = new RegisterNodeUseCase(nodesUnitOfWork);
-const synchronizeUseCase = new SynchronizeUseCase(nodesUnitOfWork);
+const registerNodeUseCase = new RegisterNodeUseCase(pool, accessDistribution);
+const synchronizeUseCase = new SynchronizeUseCase(pool, nodesRepository, accessDistribution);
 const rotateBearerUseCase = new RotateBearerUseCase(nodesRepository);
 const getProfileReadinessUseCase = new GetProfileReadinessUseCase(nodesRepository, getProfileAccessUseCase);
-const getConfigurationsUseCase = new GetConfigurationsUseCase(new DeliveryUnitOfWork(pool));
+const getConfigurationsUseCase = new GetConfigurationsUseCase(
+    pool,
+    new AuthorizeSubscriptionLinkUseCase(accessRepository),
+    new ListReadyNodesUseCase(nodesRepository),
+);
 const authorization = `Basic ${Buffer.from('admin:integration-password').toString('base64')}`;
 let app: ReturnType<typeof buildApp>;
 let port: number;
@@ -146,6 +153,25 @@ after(async () => {
     await app?.close();
     await pool.end();
     await db.end();
+});
+
+test('a shared repository keeps pool writes and rolls back writes through options.tx', async () => {
+    const user = await createUserUseCase.execute({ label: 'Repository client selection' });
+    const persisted = randomUUID();
+    await accessRepository.insertProfile(persisted, user.id, randomUUID(), randomBytes(32));
+
+    await assert.rejects(
+        transaction(pool, async (tx) => {
+            await accessRepository.insertProfile(randomUUID(), user.id, randomUUID(), randomBytes(32), { tx });
+            throw new Error('rollback_test');
+        }),
+        { message: 'rollback_test' },
+    );
+
+    assert.deepEqual(
+        (await accessRepository.readProfiles(user.id)).map((profile) => profile.id),
+        [persisted],
+    );
 });
 
 test('commercial use cases own issuance and their controllers retain validation and authentication', async () => {
@@ -298,12 +324,8 @@ test('Access Distribution enrolls a Node with active Profiles and preserves an u
     const profile = await issue();
     const accessProfile = await getProfileAccessUseCase.execute({ profileId: profile.first_profile_id });
     const bearer = randomBytes(32);
-    const node = await transaction(pool, (db) =>
-        new AccessDistribution(new NodesRepository(db), new AccessRepository(db)).enrollNode({
-            label: 'Enrolled Node',
-            connection,
-            bearer,
-        }),
+    const node = await transaction(pool, (tx) =>
+        accessDistribution.enrollNode({ label: 'Enrolled Node', connection, bearer }, { tx }),
     );
     const report = { node_id: node.id, saved: null, verified: null, error: null };
     const first = await synchronizeNode(bearer, report);
@@ -311,6 +333,60 @@ test('Access Distribution enrolls a Node with active Profiles and preserves an u
     assert.equal(first.desired.revision, '1');
     assert.deepEqual(first.snapshot?.users, [{ profile_id: accessProfile.id, vless_uuid: accessProfile.vless_uuid }]);
     assert.deepEqual((await synchronizeNode(bearer, report)).desired, first.desired);
+});
+
+test('registration rolls back the Node when sync-state insertion fails and releases its client', async () => {
+    const scopedPool = new pg.Pool({
+        host: process.env.TEST_DATABASE_SOCKET,
+        user: 'uhuru',
+        database: 'postgres',
+        max: 1,
+        connectionTimeoutMillis: 1000,
+    });
+    const scopedApp = buildApp({
+        pool: scopedPool,
+        origin: 'https://localhost',
+        adminUsername: 'admin',
+        adminPassword: 'integration-password',
+    });
+    await db.query(
+        `CREATE FUNCTION fail_enrollment()
+         RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             RAISE EXCEPTION 'injected failure';
+         END
+         $$;
+         CREATE TRIGGER fail_enrollment BEFORE INSERT ON node_sync
+         FOR EACH ROW EXECUTE FUNCTION fail_enrollment()`,
+    );
+
+    try {
+        const result = await scopedApp.inject({
+            method: 'POST',
+            url: '/admin/nodes',
+            headers: { authorization },
+            payload: {
+                label: 'Failed enrollment',
+                public_connection: connection,
+                bearer: randomBytes(32).toString('base64url'),
+            },
+        });
+
+        assert.equal(result.statusCode, 503);
+        assert.deepEqual(
+            (await db.query('SELECT (SELECT count(*)::int FROM nodes) AS nodes, count(*)::int AS sync FROM node_sync'))
+                .rows[0],
+            { nodes: 0, sync: 0 },
+        );
+        assert.equal((await scopedApp.inject({ url: '/admin/nodes', headers: { authorization } })).statusCode, 200);
+        assert.equal(scopedPool.totalCount, 1);
+        assert.equal(scopedPool.idleCount, 1);
+        assert.equal(scopedPool.waitingCount, 0);
+    } finally {
+        await db.query('DROP TRIGGER fail_enrollment ON node_sync; DROP FUNCTION fail_enrollment()');
+        await scopedApp.close();
+        await scopedPool.end();
+    }
 });
 
 test('Node and Commercial Access HTTP operations release their client after success and errors', async () => {
@@ -822,7 +898,11 @@ test('configuration delivery releases its client and rejects a failed COMMIT bef
         adminUsername: 'admin',
         adminPassword: 'integration-password',
     });
-    const useCase = new GetConfigurationsUseCase(new DeliveryUnitOfWork(deliveryPool));
+    const useCase = new GetConfigurationsUseCase(
+        deliveryPool,
+        new AuthorizeSubscriptionLinkUseCase(new AccessRepository(deliveryPool)),
+        new ListReadyNodesUseCase(new NodesRepository(deliveryPool)),
+    );
 
     try {
         const canonical = Buffer.alloc(32, 4).toString('base64url');

@@ -1,5 +1,7 @@
+import type { Pool } from 'pg';
+import { transaction } from '../../../database.ts';
+import type { AccessDistribution } from '../../../access-distribution.ts';
 import type { Connection } from '../../model.ts';
-import type { NodesUnitOfWork } from '../../unit-of-work.ts';
 
 export type RegisterNodeDto = {
     label: string;
@@ -8,13 +10,15 @@ export type RegisterNodeDto = {
 };
 
 export class RegisterNodeUseCase {
-    private readonly unitOfWork: Pick<NodesUnitOfWork, 'transaction'>;
+    private readonly pool: Pool;
+    private readonly accessDistribution: Pick<AccessDistribution, 'enrollNode'>;
 
-    constructor(unitOfWork: Pick<NodesUnitOfWork, 'transaction'>) {
-        this.unitOfWork = unitOfWork;
+    constructor(pool: Pool, accessDistribution: Pick<AccessDistribution, 'enrollNode'>) {
+        this.pool = pool;
+        this.accessDistribution = accessDistribution;
     }
 
     execute(dto: RegisterNodeDto) {
-        return this.unitOfWork.transaction(({ accessDistribution }) => accessDistribution.enrollNode(dto));
+        return transaction(this.pool, (tx) => this.accessDistribution.enrollNode(dto, { tx }));
     }
 }

@@ -1,4 +1,4 @@
-import type { Database } from '../database.ts';
+import type { Database, QueryOptions, TransactionOptions } from '../database.ts';
 import type { Connection, Diagnostics, NodeSummary, PublicNode, Report } from './model.ts';
 import type { StoredSnapshot } from '../snapshot.ts';
 
@@ -37,9 +37,9 @@ export class NodesRepository {
         ).rows;
     }
 
-    async lockDesiredNodes() {
+    async lockDesiredNodes(options: TransactionOptions) {
         return (
-            await this.db.query<DesiredNode>(
+            await options.tx.query<DesiredNode>(
                 `SELECT n.id, n.public_connection, s.desired_snapshot
                  FROM nodes n
                  JOIN node_sync s ON s.node_id = n.id
@@ -49,20 +49,26 @@ export class NodesRepository {
         ).rows;
     }
 
-    async writeDesiredSnapshot(nodeId: string, value: StoredSnapshot) {
-        await this.db.query('UPDATE node_sync SET desired_snapshot = $2 WHERE node_id = $1', [nodeId, value]);
+    async writeDesiredSnapshot(nodeId: string, value: StoredSnapshot, options: QueryOptions = {}) {
+        const db = options.tx ?? this.db;
+        await db.query('UPDATE node_sync SET desired_snapshot = $2 WHERE node_id = $1', [nodeId, value]);
     }
 
-    async insertNode(node: { id: string; label: string; connection: Connection; secretHash: Buffer }) {
-        await this.db.query(
+    async insertNode(
+        node: { id: string; label: string; connection: Connection; secretHash: Buffer },
+        options: QueryOptions = {},
+    ) {
+        const db = options.tx ?? this.db;
+        await db.query(
             `INSERT INTO nodes(id, label, public_connection, agent_secret_hash)
              VALUES ($1, $2, $3, $4)`,
             [node.id, node.label, node.connection, node.secretHash],
         );
     }
 
-    async insertSyncState(nodeId: string, value: StoredSnapshot) {
-        await this.db.query('INSERT INTO node_sync(node_id, desired_snapshot) VALUES ($1, $2)', [nodeId, value]);
+    async insertSyncState(nodeId: string, value: StoredSnapshot, options: QueryOptions = {}) {
+        const db = options.tx ?? this.db;
+        await db.query('INSERT INTO node_sync(node_id, desired_snapshot) VALUES ($1, $2)', [nodeId, value]);
     }
 
     async replaceSecretHash(nodeId: string, hash: Buffer) {
@@ -82,9 +88,11 @@ export class NodesRepository {
         ).rows;
     }
 
-    async readIncludedNodes() {
+    async readIncludedNodes(options: QueryOptions = {}) {
+        const db = options.tx ?? this.db;
+
         return (
-            await this.db.query<Pick<ReadinessNode, 'id' | 'label' | 'public_connection' | 'confirmed_snapshot'>>(
+            await db.query<Pick<ReadinessNode, 'id' | 'label' | 'public_connection' | 'confirmed_snapshot'>>(
                 `SELECT n.id, n.label, n.public_connection, s.confirmed_snapshot
                  FROM nodes n
                  JOIN node_sync s ON s.node_id = n.id
@@ -94,9 +102,9 @@ export class NodesRepository {
         ).rows;
     }
 
-    async lockNodeBySecretHash(hash: Buffer) {
+    async lockNodeBySecretHash(hash: Buffer, options: TransactionOptions) {
         return (
-            await this.db.query<{
+            await options.tx.query<{
                 id: string;
                 agent_secret_hash: Buffer;
                 public_connection: Connection;
@@ -110,9 +118,9 @@ export class NodesRepository {
         ).rows[0];
     }
 
-    async lockSyncState(nodeId: string) {
+    async lockSyncState(nodeId: string, options: TransactionOptions) {
         return (
-            await this.db.query<SyncState>(
+            await options.tx.query<SyncState>(
                 `SELECT desired_snapshot, sent_snapshot, confirmed_snapshot
                  FROM node_sync
                  WHERE node_id = $1
@@ -130,8 +138,10 @@ export class NodesRepository {
             sent: StoredSnapshot | null;
             report: Report;
         },
+        options: QueryOptions = {},
     ) {
-        await this.db.query(
+        const db = options.tx ?? this.db;
+        await db.query(
             `UPDATE node_sync
              SET confirmed_snapshot = $2,
                  confirmed_at = CASE WHEN $3 THEN clock_timestamp() ELSE confirmed_at END,

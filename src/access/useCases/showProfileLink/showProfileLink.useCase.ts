@@ -1,18 +1,22 @@
+import type { Pool } from 'pg';
+import { transaction } from '../../../database.ts';
 import { profileLink } from '../../profile.ts';
-import type { AccessUnitOfWork } from '../../unit-of-work.ts';
+import type { AccessRepository } from '../../repository.ts';
 
 export type ShowProfileLinkDto = { profileId: string };
 
 export class ShowProfileLinkUseCase {
-    private readonly unitOfWork: Pick<AccessUnitOfWork, 'transaction'>;
+    private readonly pool: Pool;
+    private readonly repository: Pick<AccessRepository, 'readProfileLink'>;
     private readonly origin: string;
 
-    constructor(unitOfWork: Pick<AccessUnitOfWork, 'transaction'>, origin: string) {
-        this.unitOfWork = unitOfWork;
+    constructor(pool: Pool, repository: Pick<AccessRepository, 'readProfileLink'>, origin: string) {
+        this.pool = pool;
+        this.repository = repository;
         this.origin = origin;
     }
 
     execute(dto: ShowProfileLinkDto) {
-        return this.unitOfWork.transaction(({ repository }) => profileLink(repository, dto.profileId, this.origin));
+        return transaction(this.pool, (tx) => profileLink(this.repository, dto.profileId, this.origin, { tx }));
     }
 }
