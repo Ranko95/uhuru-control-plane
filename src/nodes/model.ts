@@ -29,3 +29,9 @@ export type Diagnostics = {
     last_seen_at: Date | null;
     last_received_report: Report | null;
 };
+
+export type NodeSummary = PublicNode &
+    Diagnostics & {
+        desired_revision: string;
+        confirmed_revision: string | null;
+    };

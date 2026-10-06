@@ -1,58 +1,75 @@
 import { randomUUID } from 'node:crypto';
-import type { PoolClient } from 'pg';
 import { digest } from './secrets.ts';
 import { checked, snapshot } from './snapshot.ts';
 import type { Profile } from './snapshot.ts';
-import * as accessRepository from './access/repository.ts';
+import type { AccessRepository } from './access/repository.ts';
 import type { Connection } from './nodes/model.ts';
-import * as nodeRepository from './nodes/repository.ts';
+import type { NodesRepository } from './nodes/repository.ts';
+import type { DesiredNode } from './nodes/repository.ts';
 
-// The caller owns the transaction and, for issuance, the User lock and retry check.
-export async function distributeAccessChange<T>(db: PoolClient, change: (time: string) => Promise<T>) {
-    await accessRepository.lockIssuance(db);
-    const nodes = await nodeRepository.lockDesiredNodes(db);
-    const time = await accessRepository.readTime(db);
+export type DistributeAccessChangeDto<T> = { change: (time: string) => Promise<T> };
+export type RefreshNodeAccessDto = { node: DesiredNode };
+export type EnrollNodeDto = { label: string; connection: Connection; bearer: Buffer };
 
-    const result = await change(time);
-    const profiles = await accessRepository.readDesiredProfiles(db, time);
+export class AccessDistribution {
+    private readonly nodesRepository: NodesRepository;
+    private readonly accessRepository: Pick<AccessRepository, 'lockIssuance' | 'readTime' | 'readDesiredProfiles'>;
 
-    for (const node of nodes) {
-        await updateDesiredSnapshot(db, node, profiles);
+    constructor(
+        nodesRepository: NodesRepository,
+        accessRepository: Pick<AccessRepository, 'lockIssuance' | 'readTime' | 'readDesiredProfiles'>,
+    ) {
+        this.nodesRepository = nodesRepository;
+        this.accessRepository = accessRepository;
     }
 
-    return result;
-}
+    // The caller owns the transaction and, for issuance, the User lock and retry check.
+    async distributeAccessChange<T>(dto: DistributeAccessChangeDto<T>) {
+        await this.accessRepository.lockIssuance();
+        const nodes = await this.nodesRepository.lockDesiredNodes();
+        const time = await this.accessRepository.readTime();
 
-// The caller holds this Node and its sync-state lock before reading current DB time.
-export async function refreshNodeAccess(db: PoolClient, node: nodeRepository.DesiredNode) {
-    return updateDesiredSnapshot(db, node, await accessRepository.readDesiredProfiles(db));
-}
+        const result = await dto.change(time);
+        const profiles = await this.accessRepository.readDesiredProfiles(time);
 
-async function updateDesiredSnapshot(db: PoolClient, node: nodeRepository.DesiredNode, profiles: Profile[]) {
-    const old = checked(node.desired_snapshot, node.id, node.public_connection.inbound_tag);
+        for (const node of nodes) {
+            await this.updateDesiredSnapshot(node, profiles);
+        }
 
-    if (JSON.stringify(old.snapshot.users) === JSON.stringify(profiles)) {
-        return old;
+        return result;
     }
 
-    const next = snapshot(node.id, old.snapshot.inbound_tag, String(BigInt(old.revision) + 1n), profiles);
-    await nodeRepository.writeDesiredSnapshot(db, node.id, next);
+    // The caller holds this Node and its sync-state lock before reading current DB time.
+    async refreshNodeAccess(dto: RefreshNodeAccessDto) {
+        return this.updateDesiredSnapshot(dto.node, await this.accessRepository.readDesiredProfiles());
+    }
 
-    return next;
-}
+    private async updateDesiredSnapshot(node: DesiredNode, profiles: Profile[]) {
+        const old = checked(node.desired_snapshot, node.id, node.public_connection.inbound_tag);
 
-export async function enrollNode(db: PoolClient, label: string, connection: Connection, bearer: Buffer) {
-    await accessRepository.lockIssuance(db);
-    const profiles = await accessRepository.readDesiredProfiles(db);
+        if (JSON.stringify(old.snapshot.users) === JSON.stringify(profiles)) {
+            return old;
+        }
 
-    const id = randomUUID();
-    await nodeRepository.insertNode(db, {
-        id,
-        label,
-        connection,
-        secretHash: digest(bearer),
-    });
-    await nodeRepository.insertSyncState(db, id, snapshot(id, connection.inbound_tag, '1', profiles));
+        const next = snapshot(node.id, old.snapshot.inbound_tag, String(BigInt(old.revision) + 1n), profiles);
+        await this.nodesRepository.writeDesiredSnapshot(node.id, next);
 
-    return { id, label };
+        return next;
+    }
+
+    async enrollNode(dto: EnrollNodeDto) {
+        await this.accessRepository.lockIssuance();
+        const profiles = await this.accessRepository.readDesiredProfiles();
+
+        const id = randomUUID();
+        await this.nodesRepository.insertNode({
+            id,
+            label: dto.label,
+            connection: dto.connection,
+            secretHash: digest(dto.bearer),
+        });
+        await this.nodesRepository.insertSyncState(id, snapshot(id, dto.connection.inbound_tag, '1', profiles));
+
+        return { id, label: dto.label };
+    }
 }

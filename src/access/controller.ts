@@ -1,45 +1,68 @@
-import type { FastifyPluginAsync } from 'fastify';
-import type { Pool } from 'pg';
-import { object } from '../protocol.ts';
-import { uuidPattern } from '../snapshot.ts';
-import * as access from './use-cases.ts';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { CreateUserUseCase } from './useCases/createUser/createUser.useCase.ts';
+import type { ListUsersUseCase } from './useCases/listUsers/listUsers.useCase.ts';
+import type { GetPlanUseCase } from './useCases/getPlan/getPlan.useCase.ts';
+import type { IssueFirstProfileUseCase } from './useCases/issueFirstProfile/issueFirstProfile.useCase.ts';
+import type { ShowProfileLinkUseCase } from './useCases/showProfileLink/showProfileLink.useCase.ts';
+import type { ListProfilesUseCase } from './useCases/listProfiles/listProfiles.useCase.ts';
 
-const idParams = object({ id: { type: 'string', pattern: uuidPattern } });
+export class AccessController {
+    private readonly createUserUseCase: CreateUserUseCase;
+    private readonly listUsersUseCase: ListUsersUseCase;
+    private readonly getPlanUseCase: GetPlanUseCase;
+    private readonly issueFirstProfileUseCase: IssueFirstProfileUseCase;
+    private readonly showProfileLinkUseCase: ShowProfileLinkUseCase;
+    private readonly listProfilesUseCase: ListProfilesUseCase;
 
-export const accessController: FastifyPluginAsync<{
-    pool: Pool;
-    origin: string;
-}> = async (app, { pool, origin }) => {
-    app.post<{ Body: { label: string } }>(
-        '/users',
-        {
-            schema: {
-                body: object({
-                    label: {
-                        type: 'string',
-                        minLength: 1,
-                        maxLength: 200,
-                        pattern: '\\S',
-                    },
-                }),
-            },
-        },
-        async (req, reply) => reply.code(201).send(await access.createUser(pool, req.body.label.trim())),
-    );
+    constructor(
+        createUserUseCase: CreateUserUseCase,
+        listUsersUseCase: ListUsersUseCase,
+        getPlanUseCase: GetPlanUseCase,
+        issueFirstProfileUseCase: IssueFirstProfileUseCase,
+        showProfileLinkUseCase: ShowProfileLinkUseCase,
+        listProfilesUseCase: ListProfilesUseCase,
+    ) {
+        this.createUserUseCase = createUserUseCase;
+        this.listUsersUseCase = listUsersUseCase;
+        this.getPlanUseCase = getPlanUseCase;
+        this.issueFirstProfileUseCase = issueFirstProfileUseCase;
+        this.showProfileLinkUseCase = showProfileLinkUseCase;
+        this.listProfilesUseCase = listProfilesUseCase;
+    }
 
-    app.get('/users', async () => access.listUsers(pool));
+    async createUser(req: FastifyRequest<{ Body: { label: string } }>, reply: FastifyReply) {
+        const user = await this.createUserUseCase.execute({ label: req.body.label.trim() });
 
-    app.get('/plan', async () => access.getPlan(pool));
+        return reply.code(201).send(user);
+    }
 
-    app.post<{ Params: { id: string } }>('/users/:id/first-profile', { schema: { params: idParams } }, async (req) =>
-        access.issueFirstProfile(pool, req.params.id, origin),
-    );
+    async listUsers(_req: FastifyRequest, reply: FastifyReply) {
+        const users = await this.listUsersUseCase.execute({});
 
-    app.post<{ Params: { id: string } }>('/profiles/:id/link', { schema: { params: idParams } }, async (req) =>
-        access.showProfileLink(pool, req.params.id, origin),
-    );
+        return reply.send(users);
+    }
 
-    app.get<{ Params: { id: string } }>('/users/:id/profiles', { schema: { params: idParams } }, async (req) =>
-        access.listProfiles(pool, req.params.id),
-    );
-};
+    async getPlan(_req: FastifyRequest, reply: FastifyReply) {
+        const plan = await this.getPlanUseCase.execute({});
+
+        return reply.send(plan);
+    }
+
+    async issueFirstProfile(req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
+        const profile = await this.issueFirstProfileUseCase.execute({ userId: req.params.id });
+
+        return reply.send(profile);
+    }
+
+    async showProfileLink(req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
+        const profile = await this.showProfileLinkUseCase.execute({ profileId: req.params.id });
+
+        return reply.send(profile);
+    }
+
+    async listProfiles(req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
+        const profiles = await this.listProfilesUseCase.execute({ userId: req.params.id });
+
+        return reply.send(profiles);
+    }
+}

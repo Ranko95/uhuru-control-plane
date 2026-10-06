@@ -4,3 +4,4 @@ target/
 *.key
 .env
 settings.json
+.ai/

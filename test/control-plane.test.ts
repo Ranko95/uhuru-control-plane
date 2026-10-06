@@ -5,9 +5,26 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import pg from 'pg';
 import { buildApp } from '../src/app.ts';
-import * as access from '../src/access/use-cases.ts';
-import * as nodes from '../src/nodes/use-cases.ts';
-import { getConfigurations } from '../src/delivery/use-cases.ts';
+import { AccessError } from '../src/access/error.ts';
+import { CreateUserUseCase } from '../src/access/useCases/createUser/createUser.useCase.ts';
+import { ShowProfileLinkUseCase } from '../src/access/useCases/showProfileLink/showProfileLink.useCase.ts';
+import { ListProfilesUseCase } from '../src/access/useCases/listProfiles/listProfiles.useCase.ts';
+import { GetProfileAccessUseCase } from '../src/access/useCases/getProfileAccess/getProfileAccess.useCase.ts';
+import { AccessRepository } from '../src/access/repository.ts';
+import { AccessUnitOfWork } from '../src/access/unit-of-work.ts';
+import { IssueFirstProfileUseCase } from '../src/access/useCases/issueFirstProfile/issueFirstProfile.useCase.ts';
+import { AccessDistribution } from '../src/access-distribution.ts';
+import { transaction } from '../src/database.ts';
+import { NodeError } from '../src/nodes/error.ts';
+import type { Report } from '../src/nodes/model.ts';
+import { NodesRepository } from '../src/nodes/repository.ts';
+import { NodesUnitOfWork } from '../src/nodes/unit-of-work.ts';
+import { RegisterNodeUseCase } from '../src/nodes/useCases/registerNode/registerNode.useCase.ts';
+import { RotateBearerUseCase } from '../src/nodes/useCases/rotateBearer/rotateBearer.useCase.ts';
+import { GetProfileReadinessUseCase } from '../src/nodes/useCases/getProfileReadiness/getProfileReadiness.useCase.ts';
+import { SynchronizeUseCase } from '../src/nodes/useCases/synchronize/synchronize.useCase.ts';
+import { DeliveryUnitOfWork } from '../src/delivery/unit-of-work.ts';
+import { GetConfigurationsUseCase } from '../src/delivery/useCases/getConfigurations/getConfigurations.useCase.ts';
 
 const db = new pg.Pool({
     host: process.env.TEST_DATABASE_SOCKET,
@@ -19,6 +36,20 @@ const pool = new pg.Pool({
     user: 'uhuru',
     database: 'postgres',
 });
+const nodesRepository = new NodesRepository(pool);
+const accessRepository = new AccessRepository(pool);
+const accessUnitOfWork = new AccessUnitOfWork(pool);
+const createUserUseCase = new CreateUserUseCase(accessRepository);
+const issueFirstProfileUseCase = new IssueFirstProfileUseCase(accessUnitOfWork, 'https://localhost');
+const showProfileLinkUseCase = new ShowProfileLinkUseCase(accessUnitOfWork, 'https://localhost');
+const listProfilesUseCase = new ListProfilesUseCase(accessRepository);
+const getProfileAccessUseCase = new GetProfileAccessUseCase(accessRepository);
+const nodesUnitOfWork = new NodesUnitOfWork(pool);
+const registerNodeUseCase = new RegisterNodeUseCase(nodesUnitOfWork);
+const synchronizeUseCase = new SynchronizeUseCase(nodesUnitOfWork);
+const rotateBearerUseCase = new RotateBearerUseCase(nodesRepository);
+const getProfileReadinessUseCase = new GetProfileReadinessUseCase(nodesRepository, getProfileAccessUseCase);
+const getConfigurationsUseCase = new GetConfigurationsUseCase(new DeliveryUnitOfWork(pool));
 const authorization = `Basic ${Buffer.from('admin:integration-password').toString('base64')}`;
 let app: ReturnType<typeof buildApp>;
 let port: number;
@@ -119,7 +150,7 @@ after(async () => {
 
 test('commercial use cases own issuance and their controllers retain validation and authentication', async () => {
     const node = await registerNode();
-    const user = await access.createUser(pool, 'Direct use case');
+    const user = await createUserUseCase.execute({ label: 'Direct use case' });
 
     for (const [method, path] of [
         ['POST', '/admin/users'],
@@ -135,16 +166,16 @@ test('commercial use cases own issuance and their controllers retain validation 
     assert.equal((await request('POST', '/admin/users', { label: '   ' })).status, 400);
     assert.equal((await request('POST', '/admin/users/not-a-uuid/first-profile')).status, 400);
 
-    const first = await access.issueFirstProfile(pool, user.id, 'https://localhost');
+    const first = await issueFirstProfileUseCase.execute({ userId: user.id });
 
-    assert.deepEqual(await access.showProfileLink(pool, first.profile_id, 'https://localhost'), first);
-    assert.deepEqual(await access.issueFirstProfile(pool, user.id, 'https://localhost'), first);
+    assert.deepEqual(await showProfileLinkUseCase.execute({ profileId: first.profile_id }), first);
+    assert.deepEqual(await issueFirstProfileUseCase.execute({ userId: user.id }), first);
     assert.equal(first.ends_at.getTime() - first.starts_at.getTime(), 2_592_000_000);
-    assert.equal((await access.listProfiles(pool, user.id)).length, 1);
+    assert.equal((await listProfilesUseCase.execute({ userId: user.id })).length, 1);
     assert.equal((await sync(node)).json().desired.revision, '2');
     await assert.rejects(
-        access.issueFirstProfile(pool, randomUUID(), 'https://localhost'),
-        (error) => error instanceof access.AccessError && error.reason === 'not_found',
+        issueFirstProfileUseCase.execute({ userId: randomUUID() }),
+        (error) => error instanceof AccessError && error.reason === 'not_found',
     );
 });
 
@@ -250,6 +281,274 @@ async function sync(
 ) {
     return request('POST', '/agent/v1/sync', { node_id: node.id, saved, verified, error }, `Bearer ${node.bearer}`);
 }
+
+async function registerNodeDirect(label: string, bearer: Buffer) {
+    return registerNodeUseCase.execute({ label, connection, bearer });
+}
+
+async function getProfileReadiness(profileId: string) {
+    return getProfileReadinessUseCase.execute({ profileId });
+}
+
+async function synchronizeNode(bearer: Buffer, report: Report) {
+    return synchronizeUseCase.execute({ bearer, report });
+}
+
+test('Access Distribution enrolls a Node with active Profiles and preserves an unchanged desired revision', async () => {
+    const profile = await issue();
+    const accessProfile = await getProfileAccessUseCase.execute({ profileId: profile.first_profile_id });
+    const bearer = randomBytes(32);
+    const node = await transaction(pool, (db) =>
+        new AccessDistribution(new NodesRepository(db), new AccessRepository(db)).enrollNode({
+            label: 'Enrolled Node',
+            connection,
+            bearer,
+        }),
+    );
+    const report = { node_id: node.id, saved: null, verified: null, error: null };
+    const first = await synchronizeNode(bearer, report);
+
+    assert.equal(first.desired.revision, '1');
+    assert.deepEqual(first.snapshot?.users, [{ profile_id: accessProfile.id, vless_uuid: accessProfile.vless_uuid }]);
+    assert.deepEqual((await synchronizeNode(bearer, report)).desired, first.desired);
+});
+
+test('Node and Commercial Access HTTP operations release their client after success and errors', async () => {
+    const scopedPool = new pg.Pool({
+        host: process.env.TEST_DATABASE_SOCKET,
+        user: 'uhuru',
+        database: 'postgres',
+        max: 1,
+        connectionTimeoutMillis: 1000,
+    });
+    const scopedApp = buildApp({
+        pool: scopedPool,
+        origin: 'https://localhost',
+        adminUsername: 'admin',
+        adminPassword: 'integration-password',
+    });
+
+    try {
+        assert.equal((await scopedApp.inject({ url: '/admin/nodes' })).statusCode, 401);
+        assert.equal(scopedPool.totalCount, 0);
+
+        const headers = { authorization };
+        const noncanonical = Buffer.alloc(32, 4).toString('base64url').slice(0, -1) + 'R';
+
+        for (const request of [
+            { method: 'POST' as const, url: '/admin/users', payload: { label: '   ' }, headers },
+            { method: 'POST' as const, url: '/admin/users/not-a-uuid/first-profile', headers },
+            { method: 'POST' as const, url: '/admin/profiles/not-a-uuid/link', headers },
+            { url: '/admin/users/not-a-uuid/profiles', headers },
+        ]) {
+            assert.equal((await scopedApp.inject(request)).statusCode, 400);
+            assert.equal(scopedPool.totalCount, 0);
+        }
+
+        for (const [request, status] of [
+            [
+                {
+                    method: 'POST' as const,
+                    url: '/admin/nodes',
+                    headers,
+                    payload: { label: 'Invalid Bearer', public_connection: connection, bearer: noncanonical },
+                },
+                400,
+            ],
+            [
+                {
+                    method: 'POST' as const,
+                    url: '/admin/nodes',
+                    headers,
+                    payload: {
+                        label: 'Invalid public key',
+                        public_connection: { ...connection, public_key: noncanonical },
+                        bearer: randomBytes(32).toString('base64url'),
+                    },
+                },
+                400,
+            ],
+            [
+                {
+                    method: 'PUT' as const,
+                    url: `/admin/nodes/${randomUUID()}/bearer`,
+                    headers,
+                    payload: { bearer: noncanonical },
+                },
+                400,
+            ],
+            [
+                {
+                    method: 'POST' as const,
+                    url: '/agent/v1/sync',
+                    headers: { authorization: `Bearer ${noncanonical}` },
+                    payload: { node_id: randomUUID(), saved: null, verified: null, error: null },
+                },
+                401,
+            ],
+        ] as const) {
+            assert.equal((await scopedApp.inject(request)).statusCode, status);
+            assert.equal(scopedPool.totalCount, 0);
+        }
+
+        const registered = await scopedApp.inject({
+            method: 'POST',
+            url: '/admin/nodes',
+            headers,
+            payload: {
+                label: '  Scoped Node  ',
+                public_connection: connection,
+                bearer: randomBytes(32).toString('base64url'),
+            },
+        });
+
+        assert.equal(registered.statusCode, 201);
+        assert.equal(registered.json().label, 'Scoped Node');
+
+        const created = await scopedApp.inject({
+            method: 'POST',
+            url: '/admin/users',
+            headers,
+            payload: { label: '  Scoped User  ' },
+        });
+        const user = created.json();
+
+        assert.equal(created.statusCode, 201);
+        assert.equal(user.label, 'Scoped User');
+
+        const issued = await Promise.all(
+            Array.from({ length: 2 }, () =>
+                scopedApp.inject({ method: 'POST', url: `/admin/users/${user.id}/first-profile`, headers }),
+            ),
+        );
+
+        assert.deepEqual(
+            issued.map((response) => response.statusCode),
+            [200, 200],
+        );
+        assert.deepEqual(issued[0].json(), issued[1].json());
+
+        const shown = await scopedApp.inject({
+            method: 'POST',
+            url: `/admin/profiles/${issued[0].json().profile_id}/link`,
+            headers,
+        });
+
+        assert.equal(shown.statusCode, 200);
+        assert.deepEqual(shown.json(), issued[0].json());
+
+        for (const url of ['/admin/users', '/admin/plan', `/admin/users/${user.id}/profiles`]) {
+            assert.equal((await scopedApp.inject({ url, headers })).statusCode, 200);
+        }
+
+        const listing = await Promise.all([
+            scopedApp.inject({ url: '/admin/nodes', headers }),
+            scopedApp.inject({ url: '/admin/nodes', headers }),
+        ]);
+
+        assert.deepEqual(
+            listing.map((response) => response.statusCode),
+            [200, 200],
+        );
+
+        for (const request of [
+            { url: `/admin/profiles/${randomUUID()}/readiness`, headers },
+            { method: 'POST' as const, url: `/admin/users/${randomUUID()}/first-profile`, headers },
+            { method: 'POST' as const, url: `/admin/profiles/${randomUUID()}/link`, headers },
+            {
+                method: 'PUT' as const,
+                url: `/admin/nodes/${randomUUID()}/bearer`,
+                headers,
+                payload: { bearer: randomBytes(32).toString('base64url') },
+            },
+        ]) {
+            assert.equal((await scopedApp.inject(request)).statusCode, 404);
+            assert.equal((await scopedApp.inject({ url: '/admin/nodes', headers })).statusCode, 200);
+        }
+
+        assert.equal(scopedPool.totalCount, 1);
+        assert.equal(scopedPool.idleCount, 1);
+        assert.equal(scopedPool.waitingCount, 0);
+    } finally {
+        await scopedApp.close();
+        await scopedPool.end();
+    }
+});
+
+test('parallel Node requests commit and roll back independently while one waits for a lock', async () => {
+    const blockedNode = await registerNode();
+    const readyNode = await registerNode();
+    const pending = (await sync(readyNode)).json();
+    const scopedPool = new pg.Pool({
+        host: process.env.TEST_DATABASE_SOCKET,
+        user: 'uhuru',
+        database: 'postgres',
+        application_name: 'uhuru-di-concurrency',
+        max: 2,
+        connectionTimeoutMillis: 1000,
+        statement_timeout: 5000,
+    });
+    const scopedApp = buildApp({
+        pool: scopedPool,
+        origin: 'https://localhost',
+        adminUsername: 'admin',
+        adminPassword: 'integration-password',
+    });
+    const blocker = await db.connect();
+
+    try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT id FROM nodes WHERE id=$1 FOR UPDATE', [blockedNode.id]);
+        const rejected = scopedApp
+            .inject({
+                method: 'POST',
+                url: '/agent/v1/sync',
+                headers: { authorization: `Bearer ${blockedNode.bearer}` },
+                payload: { node_id: readyNode.id, saved: null, verified: null, error: null },
+            })
+            .then((response) => response);
+        const deadline = Date.now() + 5000;
+
+        while (
+            !(
+                await db.query(
+                    `SELECT 1 FROM pg_stat_activity
+                     WHERE application_name='uhuru-di-concurrency' AND wait_event_type='Lock'`,
+                )
+            ).rowCount
+        ) {
+            assert.ok(Date.now() < deadline, 'the first HTTP request must reach the held Node lock');
+
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        const ack = {
+            method: 'POST' as const,
+            url: '/agent/v1/sync',
+            headers: { authorization: `Bearer ${readyNode.bearer}` },
+            payload: { node_id: readyNode.id, saved: pending.desired, verified: pending.desired, error: null },
+        };
+        const accepted = await scopedApp.inject(ack);
+
+        assert.equal(accepted.statusCode, 200);
+        assert.equal(accepted.json().ack_status, 'accepted');
+        assert.equal(scopedPool.totalCount, 2);
+        assert.equal(scopedPool.idleCount, 1);
+        assert.equal(scopedPool.waitingCount, 0);
+
+        await blocker.query('ROLLBACK');
+
+        assert.equal((await rejected).statusCode, 403);
+        assert.equal(scopedPool.idleCount, 2);
+        assert.equal(scopedPool.waitingCount, 0);
+        assert.equal((await scopedApp.inject(ack)).json().ack_status, 'already_confirmed');
+    } finally {
+        await blocker.query('ROLLBACK');
+        blocker.release();
+        await scopedApp.close();
+        await scopedPool.end();
+    }
+});
 
 test('only a sent and verified snapshot unlocks the profile, with stable first confirmation', async () => {
     const node = await registerNode();
@@ -423,22 +722,22 @@ test('a poll waiting for a Node lock expires before accepting a previously sent 
 test('configuration delivery works without HTTP and preserves URI encoding and response headers', async () => {
     const label = 'Москва #1 / ?';
     const bearer = randomBytes(32);
-    const node = await nodes.registerNode(pool, label, connection, bearer);
+    const node = await registerNodeDirect(label, bearer);
     const p = await issue();
     const linkSecret = Buffer.from(p.path.slice('/s/'.length), 'base64url');
 
-    await assert.rejects(getConfigurations(pool, linkSecret), {
+    await assert.rejects(getConfigurationsUseCase.execute({ linkSecret }), {
         message: 'no_ready_nodes',
     });
 
     const report = { node_id: node.id, saved: null, verified: null, error: null };
-    const pending = await nodes.synchronize(pool, bearer, report);
-    await nodes.synchronize(pool, bearer, {
+    const pending = await synchronizeNode(bearer, report);
+    await synchronizeNode(bearer, {
         ...report,
         saved: pending.desired,
         verified: pending.desired,
     });
-    const body = await getConfigurations(pool, linkSecret);
+    const body = await getConfigurationsUseCase.execute({ linkSecret });
     const response = await request('GET', p.path, undefined, null);
 
     assert.equal(response.status, 200);
@@ -473,6 +772,116 @@ test('configuration delivery works without HTTP and preserves URI encoding and r
     const escapedPath = '/s/%' + p.path.charCodeAt(3).toString(16) + p.path.slice(4);
 
     assert.equal((await request('GET', escapedPath, undefined, null)).status, 404);
+});
+
+test('configuration delivery releases its client and rejects a failed COMMIT before sending configurations', async () => {
+    const node = await registerNode();
+    const profile = await issue();
+    const pending = (await sync(node)).json();
+    await sync(node, pending.desired, pending.desired);
+    const linkSecret = Buffer.from(profile.path.slice('/s/'.length), 'base64url');
+    const scopedPool = new pg.Pool({
+        host: process.env.TEST_DATABASE_SOCKET,
+        user: 'uhuru',
+        database: 'postgres',
+        max: 1,
+        connectionTimeoutMillis: 1000,
+    });
+    let failCommit = false;
+    // Inject a database-boundary failure while using the real transaction client and queries.
+    const deliveryPool = new Proxy(scopedPool, {
+        get(target, key, receiver) {
+            if (key === 'connect') {
+                return async () => {
+                    const client = await target.connect();
+
+                    return new Proxy(client, {
+                        get(target, key, receiver) {
+                            if (key === 'query') {
+                                return (...args: unknown[]) => {
+                                    if (failCommit && args[0] === 'COMMIT') {
+                                        return Promise.reject(new Error('injected_commit_failure'));
+                                    }
+
+                                    return Reflect.apply(target.query, target, args);
+                                };
+                            }
+
+                            return Reflect.get(target, key, receiver);
+                        },
+                    });
+                };
+            }
+
+            return Reflect.get(target, key, receiver);
+        },
+    });
+    const scopedApp = buildApp({
+        pool: deliveryPool,
+        origin: 'https://localhost',
+        adminUsername: 'admin',
+        adminPassword: 'integration-password',
+    });
+    const useCase = new GetConfigurationsUseCase(new DeliveryUnitOfWork(deliveryPool));
+
+    try {
+        const canonical = Buffer.alloc(32, 4).toString('base64url');
+
+        for (const url of [
+            '/s/invalid',
+            `/s/${canonical}=`,
+            `/s/${canonical.slice(0, -1)}R`,
+            `/s/%${canonical.charCodeAt(0).toString(16)}${canonical.slice(1)}`,
+            profile.path + '?query=1',
+            profile.path + '/',
+        ]) {
+            assert.equal((await scopedApp.inject({ url })).statusCode, 404);
+            assert.equal(scopedPool.totalCount, 0);
+        }
+
+        const responses = await Promise.all([
+            scopedApp.inject({ url: profile.path }),
+            scopedApp.inject({ url: profile.path }),
+        ]);
+        const body = await useCase.execute({ linkSecret });
+
+        for (const response of responses) {
+            assert.equal(response.statusCode, 200);
+            assert.equal(response.body, body);
+        }
+
+        const unknown = randomBytes(32);
+        await assert.rejects(
+            useCase.execute({ linkSecret: unknown }),
+            (error) => error instanceof AccessError && error.reason === 'not_found',
+        );
+
+        assert.equal((await scopedApp.inject({ url: `/s/${unknown.toString('base64url')}` })).statusCode, 404);
+
+        await db.query('UPDATE nodes SET include_in_subscription=false WHERE id=$1', [node.id]);
+        await assert.rejects(useCase.execute({ linkSecret }), { message: 'no_ready_nodes' });
+
+        assert.equal((await scopedApp.inject({ url: profile.path })).statusCode, 503);
+
+        await db.query('UPDATE nodes SET include_in_subscription=true WHERE id=$1', [node.id]);
+        failCommit = true;
+        await assert.rejects(useCase.execute({ linkSecret }), { message: 'injected_commit_failure' });
+        const failed = await scopedApp.inject({ url: profile.path });
+
+        assert.equal(failed.statusCode, 503);
+        assert.equal(failed.headers['retry-after'], '15');
+        assert.deepEqual(failed.json(), { error: 'temporarily_unavailable' });
+        assert.equal(scopedPool.totalCount, 1);
+        assert.equal(scopedPool.idleCount, 1);
+        assert.equal(scopedPool.waitingCount, 0);
+
+        failCommit = false;
+
+        assert.equal((await scopedApp.inject({ url: profile.path })).statusCode, 200);
+    } finally {
+        await scopedApp.close();
+        await scopedPool.end();
+    }
 });
 
 test('parallel first issuance and server restart preserve one first profile and term', async () => {
@@ -531,7 +940,17 @@ test('failure before commit rolls back the profile, subscription and all desired
     );
 
     try {
-        assert.equal((await request('POST', `/admin/users/${user.id}/first-profile`)).status, 503);
+        await assert.rejects(issueFirstProfileUseCase.execute({ userId: user.id }), { code: 'P0001' });
+        assert.equal(pool.idleCount, pool.totalCount);
+        assert.equal(pool.waitingCount, 0);
+
+        const response = await request('POST', `/admin/users/${user.id}/first-profile`);
+
+        assert.equal(response.status, 503);
+        assert.equal(response.headers['retry-after'], '15');
+        assert.deepEqual(response.json(), { error: 'temporarily_unavailable' });
+        assert.equal(pool.idleCount, pool.totalCount);
+        assert.equal(pool.waitingCount, 0);
     } finally {
         await db.query('DROP TRIGGER fail_issuance ON subscriptions; DROP FUNCTION fail_issuance()');
     }
@@ -671,10 +1090,10 @@ test('expired and revoked prepared profiles are never renewed or replaced by iss
 
 test('Node use cases roll back a failed ACK commit and keep readiness separate from inclusion and access', async () => {
     const bearer = randomBytes(32);
-    const node = await nodes.registerNode(pool, 'Direct Node', connection, bearer);
+    const node = await registerNodeDirect('Direct Node', bearer);
     const p = await issue();
     const report = { node_id: node.id, saved: null, verified: null, error: null };
-    const sent = await nodes.synchronize(pool, bearer, report);
+    const sent = await synchronizeNode(bearer, report);
     const ack = { ...report, saved: sent.desired, verified: sent.desired };
     const before = (await db.query('SELECT * FROM node_sync WHERE node_id=$1', [node.id])).rows[0];
     await db.query(
@@ -692,9 +1111,14 @@ test('Node use cases roll back a failed ACK commit and keep readiness separate f
     );
 
     try {
-        await assert.rejects(nodes.synchronize(pool, bearer, ack), {
+        await assert.rejects(synchronizeNode(bearer, ack), {
             code: 'P0001',
         });
+
+        const failed = await request('POST', '/agent/v1/sync', ack, `Bearer ${bearer.toString('base64url')}`);
+
+        assert.equal(failed.status, 503);
+        assert.equal(failed.headers['retry-after'], '15');
     } finally {
         await db.query('DROP TRIGGER fail_ack ON node_sync; DROP FUNCTION fail_ack()');
     }
@@ -702,20 +1126,20 @@ test('Node use cases roll back a failed ACK commit and keep readiness separate f
     const after = (await db.query('SELECT * FROM node_sync WHERE node_id=$1', [node.id])).rows[0];
 
     assert.ok(JSON.stringify(after) === JSON.stringify(before), 'failed commit must preserve all sync state');
-    assert.equal((await nodes.synchronize(pool, bearer, ack)).ack_status, 'accepted');
+    assert.equal((await synchronizeNode(bearer, ack)).ack_status, 'accepted');
 
-    const ready = (await nodes.getProfileReadiness(pool, p.first_profile_id))[0];
+    const ready = (await getProfileReadiness(p.first_profile_id))[0];
 
     assert.equal(ready.ready, true);
 
     const replacement = randomBytes(32);
-    await nodes.rotateBearer(pool, node.id, replacement);
+    await rotateBearerUseCase.execute({ nodeId: node.id, bearer: replacement });
 
     await assert.rejects(
-        nodes.synchronize(pool, bearer, ack),
-        (error) => error instanceof nodes.NodeError && error.reason === 'unauthorized',
+        synchronizeNode(bearer, ack),
+        (error) => error instanceof NodeError && error.reason === 'unauthorized',
     );
-    assert.equal((await nodes.synchronize(pool, replacement, ack)).ack_status, 'already_confirmed');
+    assert.equal((await synchronizeNode(replacement, ack)).ack_status, 'already_confirmed');
 
     await db.query('UPDATE nodes SET include_in_subscription=false WHERE id=$1', [node.id]);
 
@@ -728,7 +1152,7 @@ test('Node use cases roll back a failed ACK commit and keep readiness separate f
          WHERE user_id = $1`,
         [p.user.id],
     );
-    const historical = (await nodes.getProfileReadiness(pool, p.first_profile_id))[0];
+    const historical = (await getProfileReadiness(p.first_profile_id))[0];
 
     assert.equal(historical.ready, true);
     assert.equal(historical.desired_access, false);
@@ -802,9 +1226,33 @@ test('node Bearer binds one node and rotates without overlap or resetting access
     assert.equal((await sync({ ...node, bearer: hash.toString('base64url') })).status, 401);
     assert.equal((await request('POST', `/admin/profiles/${p.first_profile_id}/link`, undefined, null)).status, 401);
 
-    const nodes = (await request('GET', '/admin/nodes')).text;
+    const listing = await request('GET', '/admin/nodes');
+    const listedNodes = listing.json();
 
-    assert.ok(!nodes.includes(replacement) && !nodes.includes(initial.snapshot.users[0].vless_uuid));
+    assert.equal(listing.status, 200);
+    assert.equal(listing.headers['cache-control'], 'no-store');
+    assert.deepEqual(
+        listedNodes.map((n: { id: string }) => n.id),
+        [node.id, other.id].sort(),
+    );
+
+    for (const listedNode of listedNodes) {
+        assert.deepEqual(Object.keys(listedNode).sort(), [
+            'confirmed_at',
+            'confirmed_revision',
+            'desired_revision',
+            'id',
+            'include_in_subscription',
+            'label',
+            'last_received_report',
+            'last_seen_at',
+            'public_connection',
+        ]);
+        assert.deepEqual(listedNode.public_connection, connection);
+    }
+
+    assert.ok(!listing.text.includes(replacement) && !listing.text.includes(initial.snapshot.users[0].vless_uuid));
+    assert.ok(!listing.text.includes(hash.toString('base64url')));
 });
 
 test('canonical inputs and duplicate keys are rejected without revealing secrets', async () => {
@@ -1018,6 +1466,10 @@ test('prepared profile limits include every unrevoked profile and readiness requ
 
     // DBA-only corruption fixture: an old confirmation cannot authorize a different UUID.
     await db.query('UPDATE access_profiles SET vless_uuid=$2 WHERE id=$1', [p.first_profile_id, randomUUID()]);
+    await assert.rejects(
+        getConfigurationsUseCase.execute({ linkSecret: Buffer.from(p.path.slice('/s/'.length), 'base64url') }),
+        { message: 'no_ready_nodes' },
+    );
 
     assert.equal((await request('GET', p.path, undefined, null)).status, 503);
     assert.equal((await request('GET', `/admin/profiles/${p.first_profile_id}/readiness`)).json()[0].ready, false);

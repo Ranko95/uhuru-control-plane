@@ -5,12 +5,32 @@ import type { Pool } from 'pg';
 import { HttpError, parseJson } from './protocol.ts';
 import { digest } from './secrets.ts';
 
-import { deliveryController } from './delivery/controller.ts';
-import { accessController } from './access/controller.ts';
-import { nodeAdminController, nodeAgentController } from './nodes/controller.ts';
-
-import * as access from './access/use-cases.ts';
-import * as nodes from './nodes/use-cases.ts';
+import { DeliveryController } from './delivery/controller.ts';
+import { deliveryRouter } from './delivery/delivery.router.ts';
+import { DeliveryUnitOfWork } from './delivery/unit-of-work.ts';
+import { GetConfigurationsUseCase } from './delivery/useCases/getConfigurations/getConfigurations.useCase.ts';
+import { AccessController } from './access/controller.ts';
+import { accessRouter } from './access/access.router.ts';
+import { AccessRepository } from './access/repository.ts';
+import { AccessUnitOfWork } from './access/unit-of-work.ts';
+import { AccessError } from './access/error.ts';
+import { CreateUserUseCase } from './access/useCases/createUser/createUser.useCase.ts';
+import { ListUsersUseCase } from './access/useCases/listUsers/listUsers.useCase.ts';
+import { GetPlanUseCase } from './access/useCases/getPlan/getPlan.useCase.ts';
+import { IssueFirstProfileUseCase } from './access/useCases/issueFirstProfile/issueFirstProfile.useCase.ts';
+import { ShowProfileLinkUseCase } from './access/useCases/showProfileLink/showProfileLink.useCase.ts';
+import { ListProfilesUseCase } from './access/useCases/listProfiles/listProfiles.useCase.ts';
+import { GetProfileAccessUseCase } from './access/useCases/getProfileAccess/getProfileAccess.useCase.ts';
+import { NodesController, NodesAgentController } from './nodes/controller.ts';
+import { nodesRouter, nodesAgentRouter } from './nodes/nodes.router.ts';
+import { NodesRepository } from './nodes/repository.ts';
+import { NodesUnitOfWork } from './nodes/unit-of-work.ts';
+import { ListNodesUseCase } from './nodes/useCases/listNodes/listNodes.useCase.ts';
+import { RegisterNodeUseCase } from './nodes/useCases/registerNode/registerNode.useCase.ts';
+import { RotateBearerUseCase } from './nodes/useCases/rotateBearer/rotateBearer.useCase.ts';
+import { GetProfileReadinessUseCase } from './nodes/useCases/getProfileReadiness/getProfileReadiness.useCase.ts';
+import { SynchronizeUseCase } from './nodes/useCases/synchronize/synchronize.useCase.ts';
+import { NodeError } from './nodes/error.ts';
 
 export function buildApp(options: { pool: Pool; origin: string; adminUsername: string; adminPassword: string }) {
     const origin = new URL(options.origin);
@@ -30,6 +50,30 @@ export function buildApp(options: { pool: Pool; origin: string; adminUsername: s
     }
 
     const { pool } = options;
+
+    const accessRepository = new AccessRepository(pool);
+    const accessUnitOfWork = new AccessUnitOfWork(pool);
+    const accessController = new AccessController(
+        new CreateUserUseCase(accessRepository),
+        new ListUsersUseCase(accessRepository),
+        new GetPlanUseCase(accessRepository),
+        new IssueFirstProfileUseCase(accessUnitOfWork, origin.origin),
+        new ShowProfileLinkUseCase(accessUnitOfWork, origin.origin),
+        new ListProfilesUseCase(accessRepository),
+    );
+    const getProfileAccessUseCase = new GetProfileAccessUseCase(accessRepository);
+
+    const nodesRepository = new NodesRepository(pool);
+    const nodesUnitOfWork = new NodesUnitOfWork(pool);
+
+    const nodesController = new NodesController(
+        new ListNodesUseCase(nodesRepository),
+        new RegisterNodeUseCase(nodesUnitOfWork),
+        new RotateBearerUseCase(nodesRepository),
+        new GetProfileReadinessUseCase(nodesRepository, getProfileAccessUseCase),
+    );
+    const nodesAgentController = new NodesAgentController(new SynchronizeUseCase(nodesUnitOfWork));
+    const deliveryController = new DeliveryController(new GetConfigurationsUseCase(new DeliveryUnitOfWork(pool)));
 
     const adminHash = digest(
         `Basic ${Buffer.from(`${options.adminUsername}:${options.adminPassword}`).toString('base64')}`,
@@ -63,12 +107,12 @@ export function buildApp(options: { pool: Pool; origin: string; adminUsername: s
         const e = error as { statusCode?: number; code?: string };
 
         const accessStatus =
-            error instanceof access.AccessError
+            error instanceof AccessError
                 ? { not_found: 404, profile_limit: 409, revoked: 410, expired: 403 }[error.reason]
                 : undefined;
 
         const nodeStatus =
-            error instanceof nodes.NodeError
+            error instanceof NodeError
                 ? {
                       not_found: 404,
                       unauthorized: 401,
@@ -114,14 +158,14 @@ export function buildApp(options: { pool: Pool; origin: string; adminUsername: s
                 }
             });
 
-            admin.register(accessController, { pool, origin: origin.origin });
-            admin.register(nodeAdminController, { pool });
+            admin.register(accessRouter, { controller: accessController });
+            admin.register(nodesRouter, { controller: nodesController });
         },
         { prefix: '/admin' },
     );
 
-    app.register(nodeAgentController, { prefix: '/agent/v1', pool });
-    app.register(deliveryController, { pool });
+    app.register(nodesAgentRouter, { prefix: '/agent/v1', controller: nodesAgentController });
+    app.register(deliveryRouter, { controller: deliveryController });
 
     return app;
 }
