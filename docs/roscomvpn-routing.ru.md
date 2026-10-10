@@ -1,7 +1,7 @@
 # RoscomVPN DEFAULT: CDN и приёмка
 
 Control Plane добавляет `Routing: happ://routing/onadd/<base64 compact JSON>` и
-`Profile-Update-Interval: 24` только после успешного получения конфигураций и COMMIT.
+`Profile-Update-Interval: 1` только после успешного получения конфигураций и COMMIT.
 VLESS-тело сохраняется. Все Ссылки подписки получают один профиль `Uhuru DEFAULT`;
 распознавания приложения и выключателя нет. `DeliveryController` статически
 импортирует JSON и собирает заголовок в `getConfigurations`. Из upstream меняется
@@ -43,7 +43,7 @@ VLESS-тело сохраняется. Все Ссылки подписки по
 
 Достаточно штатного деплоя приложения: tracked JSON попадает в релиз вместе с кодом.
 Проверить действующую Ссылку подписки через реальный nginx: ответ 200, прежнее
-VLESS-тело, `Profile-Update-Interval: 24`, декодируемый `Routing` с `Uhuru DEFAULT`
+VLESS-тело, `Profile-Update-Interval: 1`, декодируемый `Routing` с `Uhuru DEFAULT`
 и исходными CDN URL из JSON. Секретный URL и тело не публиковать в журнале проверок.
 Ответы 403/404/410/503 не должны содержать оба новых заголовка.
 Проверка публичной выдачи подписки на VPS пока **NOT RUN**.

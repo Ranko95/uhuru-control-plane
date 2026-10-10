@@ -824,7 +824,7 @@ test('configuration delivery works without HTTP and preserves URI encoding and r
     assert.equal(response.headers['content-type'], 'text/plain; charset=utf-8');
     assert.equal(response.headers['cache-control'], 'no-store');
     assert.equal(response.headers['referrer-policy'], 'no-referrer');
-    assert.equal(response.headers['profile-update-interval'], '24');
+    assert.equal(response.headers['profile-update-interval'], '1');
     const routing = response.headers.routing;
 
     assert.ok(typeof routing === 'string');
