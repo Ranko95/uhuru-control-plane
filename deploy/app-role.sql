@@ -1,4 +1,4 @@
--- Run as the schema owner. The local service connects through Unix peer authentication.
+-- Run as the schema owner. Assign the application password separately after creating the role.
 CREATE ROLE uhuru LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 REVOKE ALL ON DATABASE uhuru FROM PUBLIC;
 GRANT CONNECT ON DATABASE uhuru TO uhuru;

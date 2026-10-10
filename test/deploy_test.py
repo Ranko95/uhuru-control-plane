@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,44 @@ elif name == 'timeout':
 else:
     raise AssertionError(name)
 '''
+
+
+class RuntimePolicyTest(unittest.TestCase):
+    def test_core_dump_policy(self):
+        script = Path(__file__).resolve().parents[1] / 'deploy/check-runtime.sh'
+        with tempfile.TemporaryDirectory(prefix='uhuru-runtime-test-') as directory:
+            root = Path(directory)
+            for name in ['grep', 'cat']:
+                # Redirect only the OS file boundary; use the real command on each fixture.
+                wrapper = root / name
+                wrapper.write_text(f'''#!{sys.executable}
+import os, pathlib, subprocess, sys
+root = pathlib.Path(os.environ['RUNTIME_TEST_ROOT'])
+files = {{'/proc/self/limits': 'limits', '/proc/sys/kernel/core_pattern': 'core_pattern'}}
+args = [str(root / files[arg]) if arg in files else arg for arg in sys.argv[1:]]
+sys.exit(subprocess.call([{shutil.which(name)!r}, *args]))
+''')
+                wrapper.chmod(0o755)
+            for name, limits, pattern, expected in [
+                ('disabled', 'Max core file size 0 0 bytes\n', 'core\n', 0),
+                ('soft limit', 'Max core file size 1024 unlimited bytes\n', 'core\n', 1),
+                ('hard limit', 'Max core file size 0 unlimited bytes\n', 'core\n', 1),
+                ('pipe collector', 'Max core file size 0 0 bytes\n', '|/usr/bin/collector\n', 1),
+                ('missing limits', '', 'core\n', 1),
+                ('unreadable pattern', 'Max core file size 0 0 bytes\n', None, 1),
+            ]:
+                with self.subTest(name=name):
+                    (root / 'limits').write_text(limits)
+                    if pattern is None:
+                        (root / 'core_pattern').unlink(missing_ok=True)
+                    else:
+                        (root / 'core_pattern').write_text(pattern)
+                    result = subprocess.run(
+                        ['/bin/sh', str(script)], text=True, capture_output=True, timeout=5,
+                        env={**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                             'RUNTIME_TEST_ROOT': str(root)})
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    self.assertEqual(result.stdout, '')
 
 
 class DeploymentTest(unittest.TestCase):

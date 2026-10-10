@@ -14,5 +14,6 @@ COPY schema.sql ./schema.sql
 COPY deploy ./deploy
 COPY stand/e2e.py /control-plane-e2e.py
 RUN install -m 0644 deploy/uhuru-control-plane.service /etc/systemd/system/ \
+ && install -m 0755 deploy/check-runtime.sh /usr/local/sbin/uhuru-check-runtime \
  && mkdir -p /etc/systemd/system/postgresql@.service.d \
  && printf '[Service]\nLimitCORE=0\n' > /etc/systemd/system/postgresql@.service.d/no-core.conf

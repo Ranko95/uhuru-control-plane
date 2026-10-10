@@ -25,16 +25,15 @@ import { GetProfileReadinessUseCase } from '../src/nodes/useCases/getProfileRead
 import { SynchronizeUseCase } from '../src/nodes/useCases/synchronize/synchronize.useCase.ts';
 import { GetConfigurationsUseCase } from '../src/delivery/useCases/getConfigurations/getConfigurations.useCase.ts';
 
-const db = new pg.Pool({
-    host: process.env.TEST_DATABASE_SOCKET,
-    user: 'postgres',
-    database: 'postgres',
-});
-const pool = new pg.Pool({
-    host: process.env.TEST_DATABASE_SOCKET,
+const db = new pg.Pool({ user: 'postgres', database: 'postgres' });
+const database = {
+    host: process.env.PGHOST,
+    port: Number(process.env.PGPORT),
     user: 'uhuru',
+    password: process.env.TEST_DATABASE_PASSWORD,
     database: 'postgres',
-});
+};
+const pool = new pg.Pool(database);
 const nodesRepository = new NodesRepository(pool);
 const accessRepository = new AccessRepository(pool);
 const accessDistribution = new AccessDistribution(nodesRepository, accessRepository);
@@ -150,6 +149,7 @@ before(async () => {
     await db.query(await readFile(new URL('../schema.sql', import.meta.url), 'utf8'));
     const grants = await readFile(new URL('../deploy/app-role.sql', import.meta.url), 'utf8');
     await db.query(grants.replaceAll('DATABASE uhuru', 'DATABASE postgres'));
+    await db.query(`ALTER ROLE uhuru PASSWORD ${pg.escapeLiteral(process.env.TEST_DATABASE_PASSWORD!)}`);
 
     await startApp();
 });
@@ -346,9 +346,7 @@ test('Access Distribution enrolls a Node with active Profiles and preserves an u
 
 test('registration rolls back the Node when sync-state insertion fails and releases its client', async () => {
     const scopedPool = new pg.Pool({
-        host: process.env.TEST_DATABASE_SOCKET,
-        user: 'uhuru',
-        database: 'postgres',
+        ...database,
         max: 1,
         connectionTimeoutMillis: 1000,
     });
@@ -400,9 +398,7 @@ test('registration rolls back the Node when sync-state insertion fails and relea
 
 test('Node and Commercial Access HTTP operations release their client after success and errors', async () => {
     const scopedPool = new pg.Pool({
-        host: process.env.TEST_DATABASE_SOCKET,
-        user: 'uhuru',
-        database: 'postgres',
+        ...database,
         max: 1,
         connectionTimeoutMillis: 1000,
     });
@@ -565,9 +561,7 @@ test('parallel Node requests commit and roll back independently while one waits 
     const readyNode = await registerNode();
     const pending = (await sync(readyNode)).json();
     const scopedPool = new pg.Pool({
-        host: process.env.TEST_DATABASE_SOCKET,
-        user: 'uhuru',
-        database: 'postgres',
+        ...database,
         application_name: 'uhuru-di-concurrency',
         max: 2,
         connectionTimeoutMillis: 1000,
@@ -922,9 +916,7 @@ test('configuration delivery releases its client and rejects a failed COMMIT bef
     await sync(node, pending.desired, pending.desired);
     const linkSecret = Buffer.from(profile.path.slice('/s/'.length), 'base64url');
     const scopedPool = new pg.Pool({
-        host: process.env.TEST_DATABASE_SOCKET,
-        user: 'uhuru',
-        database: 'postgres',
+        ...database,
         max: 1,
         connectionTimeoutMillis: 1000,
     });

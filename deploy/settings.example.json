@@ -1,7 +1,14 @@
 {
     "origin": "https://control.example.com",
     "port": 8080,
-    "database_socket": "/var/run/postgresql",
+    "database": {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "user": "uhuru",
+        "password": "REPLACE_WITH_A_RANDOM_DATABASE_PASSWORD",
+        "database": "uhuru",
+        "maxPoolSize": 10
+    },
     "admin_username": "admin",
     "admin_password": "REPLACE_WITH_A_RANDOM_PASSWORD"
 }

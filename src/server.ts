@@ -14,19 +14,6 @@ process.on('uncaughtException', fatal);
 process.on('unhandledRejection', fatal);
 
 try {
-    if (process.platform !== 'linux') {
-        throw new Error('linux_required');
-    }
-
-    const limits = await readFile('/proc/self/limits', 'utf8');
-
-    if (
-        !/^Max core file size\s+0\s+0\s+/m.test(limits) ||
-        (await readFile('/proc/sys/kernel/core_pattern', 'utf8')).trim().startsWith('|')
-    ) {
-        throw new Error('core_dump_policy');
-    }
-
     const path = process.argv[2];
 
     if (!path || ((await stat(path)).mode & 0o037) !== 0) {
@@ -34,9 +21,26 @@ try {
     }
 
     const settings = JSON.parse(await readFile(path, 'utf8'));
+    const database = settings.database;
 
-    if (typeof settings.database_socket !== 'string' || !settings.database_socket.startsWith('/')) {
-        throw new Error('unix_database_required');
+    if (
+        !database ||
+        typeof database.host !== 'string' ||
+        !database.host.trim() ||
+        database.host.startsWith('/') ||
+        !Number.isInteger(database.port) ||
+        database.port < 1 ||
+        database.port > 65535 ||
+        typeof database.user !== 'string' ||
+        !database.user.trim() ||
+        typeof database.password !== 'string' ||
+        !database.password ||
+        typeof database.database !== 'string' ||
+        !database.database.trim() ||
+        !Number.isSafeInteger(database.maxPoolSize) ||
+        database.maxPoolSize < 1
+    ) {
+        throw new Error('invalid_database_settings');
     }
 
     if (settings.listen_host && settings.listen_host !== '127.0.0.1') {
@@ -44,10 +48,12 @@ try {
     }
 
     const pool = new pg.Pool({
-        host: settings.database_socket,
-        user: 'uhuru',
-        database: 'uhuru',
-        max: 10,
+        host: database.host,
+        port: database.port,
+        user: database.user,
+        password: database.password,
+        database: database.database,
+        max: database.maxPoolSize,
     });
 
     pool.on('error', () => process.stderr.write('database_unavailable\n'));
@@ -79,7 +85,7 @@ try {
     }
 
     await app.listen({
-        host: settings.listen_host,
+        host: '127.0.0.1',
         port: settings.port ?? 8080,
     });
 

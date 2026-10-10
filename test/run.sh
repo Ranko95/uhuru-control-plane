@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 ulimit -c 0
 cd "$(dirname "$0")/.."
 
@@ -8,7 +9,18 @@ if [ -d /opt/homebrew/opt/postgresql@18/bin ]; then
 fi
 
 test_root=$(mktemp -d /tmp/uhuru-cp-test.XXXXXX)
-export TEST_DATABASE_SOCKET="$test_root"
+export PGHOST=127.0.0.1 PGUSER=postgres PGDATABASE=postgres
+PGPORT=$(node --input-type=module -e '
+import net from "node:net";
+const server = net.createServer();
+server.listen(0, "127.0.0.1", () => {
+    process.stdout.write(String(server.address().port));
+    server.close();
+});
+')
+PGPASSWORD=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')
+TEST_DATABASE_PASSWORD=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex") + ":@/?#%")')
+export PGPORT PGPASSWORD TEST_DATABASE_PASSWORD
 
 cleanup() {
   pg_ctl -D "$test_root/data" -m immediate stop >/dev/null 2>&1 || true
@@ -17,9 +29,13 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-initdb -D "$test_root/data" -U postgres -A trust --no-locale >/dev/null
+printf '%s\n' "$PGPASSWORD" > "$test_root/postgres-password"
+initdb -D "$test_root/data" -U postgres --auth-local=trust --auth-host=scram-sha-256 \
+  --pwfile="$test_root/postgres-password" --no-locale >/dev/null
 cat >> "$test_root/data/postgresql.conf" <<EOF
-listen_addresses = ''
+listen_addresses = '127.0.0.1'
+port = $PGPORT
+password_encryption = 'scram-sha-256'
 unix_socket_directories = '$test_root'
 unix_socket_permissions = 0700
 log_statement = 'none'

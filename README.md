@@ -100,10 +100,38 @@ npm test
 sh stand/run.sh ../node-agent
 ```
 
-`npm test` creates a private temporary PostgreSQL cluster with no TCP listener,
+`npm test` creates a private temporary PostgreSQL cluster on a free loopback TCP port with SCRAM passwords,
 runs real loopback HTTP tests using a restricted application role, then removes the cluster.
 PostgreSQL `initdb`/`pg_ctl` must be on PATH (Homebrew PostgreSQL 18 is detected).
 The native Node test runner accepts filters, e.g. `npm test -- --test-name-pattern='ACK'`.
+
+## Run locally on macOS or Linux
+
+Use Node.js 24.11+ and a local PostgreSQL 15+ (Homebrew PostgreSQL 18 is detected by the test runner).
+Run the PostgreSQL setup commands as a cluster administrator (the Homebrew user, or `postgres` on Linux).
+Create a fresh development database once:
+
+```sh
+createdb uhuru
+psql -X -v ON_ERROR_STOP=1 -d uhuru -f schema.sql
+psql -X -v ON_ERROR_STOP=1 -d uhuru -f deploy/app-role.sql
+psql -X -d postgres -c "SET password_encryption = 'scram-sha-256'" -c '\password uhuru'
+```
+
+Add `host uhuru uhuru 127.0.0.1/32 scram-sha-256` before other matching rules in `pg_hba.conf`
+(find it with `psql -X -At -d postgres -c 'SHOW hba_file'`), then reload with
+`psql -X -d postgres -c 'SELECT pg_reload_conf()'`.
+Copy `deploy/settings.example.json` to the ignored `settings.json`, enter the database password
+and a separate admin password, set `origin` to `https://localhost`, and run:
+
+```sh
+chmod 600 settings.json
+ulimit -c 0
+npm start -- settings.json
+```
+
+The local HTTP API listens on `127.0.0.1:8080`; no nginx or systemd is needed for local API work.
+Subscription links use the configured HTTPS origin; testing them through HTTPS still requires a TLS proxy.
 
 Use `npm run format` to apply Prettier and `npm run lint -- --fix` to apply ESLint fixes.
 Keep `printWidth: 120`, use braces for every branch and loop, and declare one variable per statement.
@@ -137,17 +165,21 @@ runuser -u postgres -- createdb uhuru
 runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f schema.sql
 runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f deploy/app-role.sql
 install -m 0644 deploy/uhuru-control-plane.service /etc/systemd/system/
+install -m 0755 deploy/check-runtime.sh /usr/local/sbin/uhuru-check-runtime
 ```
 
 These SQL files are a one-time fresh installation, never a startup reset or a
 restore procedure. The database remains owned by `postgres`; the service role
 cannot delete records or change Profile credentials, owners or `first_profile_id`.
-Use local Unix peer authentication for `uhuru` in `pg_hba.conf`; do not add a trust
-or TCP rule. Keep `PGDATA` and its `pg_wal` directory owned by PostgreSQL and mode
-0700, backups excluded, and the database port closed.
+Use `host uhuru uhuru 127.0.0.1/32 scram-sha-256` before other matching rules in `pg_hba.conf`.
+Keep local peer authentication for PostgreSQL administration. PostgreSQL listens only on
+`127.0.0.1`; never expose its TCP port publicly. Keep `PGDATA` and its `pg_wal` directory owned by PostgreSQL and mode
+0700, backups excluded.
 
 Before loading secrets, install [the PostgreSQL logging settings](deploy/postgresql-secrets.conf)
 in the dedicated cluster's included configuration directory and restart that cluster.
+The settings also enable `password_encryption = 'scram-sha-256'`. Assign the role password with
+`runuser -u postgres -- psql -X -d postgres -c '\password uhuru'`, then reload `pg_hba.conf`.
 Disable any extension, audit collector or platform collector that records statements,
 parameters or process memory. Suppressing parameter logs alone does not suppress
 constraint error details; the configuration also suppresses ordinary server errors
@@ -157,11 +189,15 @@ Set both soft and hard `LimitCORE=0` for the actual PostgreSQL cluster unit, as 
 provided Control Plane unit already does. Require a file-mode kernel `core_pattern`
 without a leading `|`; pipe collectors bypass the usual core limit. Set that host
 policy before starting services. The Control Plane refuses startup if these core
-prerequisites or its restricted database role are absent. Review the same policy
+prerequisites are absent through the unit's `ExecStartPre` check; the application itself
+refuses a privileged database role. Review the same policy
 for the separate Node Agent/Xray services.
 
 Create `/etc/uhuru/settings.json` from [the example](deploy/settings.example.json),
-with a unique random admin password and the final HTTPS origin. Use root:`uhuru`
+with separate unique random database/admin passwords and the final HTTPS origin.
+The `database` object contains `host`, `port`, `user`, `password`, `database` and `maxPoolSize`, all required.
+`maxPoolSize` is a positive integer limiting the number of connections in the pool; the example uses `10`;
+use `127.0.0.1:5432`, role `uhuru` and database `uhuru` on the dedicated VPS. Use root:`uhuru`
 0640 for the settings. The application listens on HTTP `127.0.0.1:8080` only;
 nginx terminates public HTTPS on port 443. It does not trust forwarded headers.
 Install [the nginx site](deploy/uhuru-control-plane.nginx.conf) with a public certificate,
@@ -181,6 +217,8 @@ for certificate issuance, firewall and proxy checks. See the
 
 The [recorded VPS deployment and step-by-step runbook](docs/vps-deployment-runbook.ru.md)
 contains the commands, host settings and verification results from the deployment on 3 October 2026.
+For an existing peer-based installation, follow [the password transition guide](docs/database-password-transition.ru.md)
+before deploying the new application; it preserves compatibility with the previous release for rollback.
 
 Для обновлений после push в `main` используйте [GitHub Actions и SSH-автодеплой](docs/autodeploy.ru.md):
 обязательные typecheck/тесты, подготовка версии до перезапуска systemd и откат при

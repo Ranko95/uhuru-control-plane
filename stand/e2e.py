@@ -41,10 +41,17 @@ def main():
     command(['systemd-tmpfiles', '--create', '/etc/tmpfiles.d/uhuru-node.tmpfiles.conf'])
     version = sorted(Path('/etc/postgresql').iterdir())[0].name
     (Path('/etc/postgresql')/version/'main/conf.d/uhuru.conf').write_bytes(Path('/opt/uhuru/deploy/postgresql-secrets.conf').read_bytes())
+    hba = Path('/etc/postgresql')/version/'main/pg_hba.conf'
+    hba.write_text('host uhuru uhuru 127.0.0.1/32 scram-sha-256\n' + hba.read_text())
     command(['systemctl', 'restart', f'postgresql@{version}-main'])
     command(['runuser', '-u', 'postgres', '--', 'createdb', 'uhuru'])
     for script in ['/opt/uhuru/schema.sql', '/opt/uhuru/deploy/app-role.sql']:
         command(['runuser', '-u', 'postgres', '--', 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-d', 'uhuru', '-f', script])
+    database_password = os.urandom(32).hex()
+    result = subprocess.run(
+        ['runuser', '-u', 'postgres', '--', 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-d', 'uhuru'],
+        input=f"ALTER ROLE uhuru PASSWORD '{database_password}';".encode(), capture_output=True, timeout=10)
+    check(result.returncode == 0, 'database_password_setup')
     uid = int(command(['id', '-u', 'uhuru']).stdout)
     gid = int(command(['id', '-g', 'uhuru']).stdout)
     Path('/etc/uhuru').mkdir(mode=0o750)
@@ -54,7 +61,7 @@ def main():
     cp_settings = dict(
         origin='https://localhost:18444',
         port=18080,
-        database_socket='/var/run/postgresql',
+        database=dict(host='127.0.0.1', port=5432, user='uhuru', password=database_password, database='uhuru', maxPoolSize=10),
         admin_username='admin',
         admin_password=password,
     )
@@ -436,7 +443,7 @@ def main():
         client.terminate()
         client.wait(timeout=10)
 
-    forbidden = [bearer, password, basic, uri.username, issued['link'], link_path.rsplit('/', 1)[1], private_key]
+    forbidden = [bearer, password, database_password, basic, uri.username, issued['link'], link_path.rsplit('/', 1)[1], private_key]
     forbidden += [base64.urlsafe_b64decode(link_path.rsplit('/', 1)[1] + '=').hex(),
                   hashlib.sha256(base64.urlsafe_b64decode(bearer + '=')).hexdigest(), 'BEGIN PRIVATE KEY']
     logs = command(['journalctl', '--no-pager', '-o', 'cat', '-u', 'uhuru-control-plane', '-u', 'uhuru-node-agent', '-u', 'uhuru-xray', '-u', 'nginx']).stdout

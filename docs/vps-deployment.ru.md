@@ -1,6 +1,6 @@
 # Первый деплой Control Plane на Debian/Ubuntu VPS
 
-Схема: `Node Agent / VPN-клиент / администратор → HTTPS :443 nginx → HTTP 127.0.0.1:8080 Control Plane → Unix socket PostgreSQL`. Входящий порт для Agent не нужен: он сам отправляет `POST /agent/v1/sync`. Публичны `/agent/v1/sync`, `/s/:secret` и пока `/admin`; последний защищён Basic Auth приложения, без ограничения по IP или VPN.
+Схема: `Node Agent / VPN-клиент / администратор → HTTPS :443 nginx → HTTP 127.0.0.1:8080 Control Plane → TCP 127.0.0.1:5432 PostgreSQL`. Входящий порт для Agent не нужен: он сам отправляет `POST /agent/v1/sync`. Публичны `/agent/v1/sync`, `/s/:secret` и пока `/admin`; последний защищён Basic Auth приложения, без ограничения по IP или VPN.
 
 ## Подготовка
 
@@ -21,9 +21,12 @@ runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f schema.sql
 runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f deploy/app-role.sql
 install -o root -g uhuru -m 0640 deploy/settings.example.json /etc/uhuru/settings.json
 install -m 0644 deploy/uhuru-control-plane.service /etc/systemd/system/
+install -m 0755 deploy/check-runtime.sh /usr/local/sbin/uhuru-check-runtime
 ```
 
-SQL-команды предназначены только для **новой** базы, не для повторного запуска или восстановления. В `/etc/uhuru/settings.json` установите `origin` равным `https://control.uhuru.pro` и замените примерный пароль на уникальный случайный пароль из менеджера секретов. Не записывайте его в аргументы команд, историю shell или журналы. `port` оставьте `8080`; приложение принудительно слушает только `127.0.0.1`. Поля `tls_cert`, `tls_key` и `listen_host` для нового развёртывания не нужны: сертификат принадлежит nginx.
+SQL-команды предназначены только для **новой** базы, не для повторного запуска или восстановления. В `/etc/uhuru/settings.json` установите `origin` равным `https://control.uhuru.pro` и замените `admin_password` и `database.password` на разные уникальные случайные пароли из менеджера секретов. Поля `database.host`, `database.port`, `database.user`, `database.database` оставьте `127.0.0.1`, `5432`, `uhuru`, `uhuru`. Не записывайте пароли в аргументы команд, историю shell или журналы. `port` оставьте `8080`; приложение принудительно слушает только `127.0.0.1`. Поля `tls_cert`, `tls_key` и `listen_host` для нового развёртывания не нужны: сертификат принадлежит nginx.
+
+Для приложения добавьте в начало `pg_hba.conf` правило `host uhuru uhuru 127.0.0.1/32 scram-sha-256`; локальные peer-правила для администрирования сохраните. Установите `deploy/postgresql-secrets.conf` по README и перезапустите кластер: PostgreSQL должен слушать только `127.0.0.1:5432`. Задайте пароль роли интерактивно через `runuser -u postgres -- psql -X -d postgres -c '\password uhuru'` и внесите тот же пароль в `database.password`.
 
 ## Сертификат и nginx
 
