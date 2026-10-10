@@ -35,7 +35,7 @@ export class DeliveryController {
 
         return reply
             .header('Routing', routingHeader)
-            .header('Profile-Update-Interval', '24')
+            .header('Profile-Update-Interval', '1')
             .type('text/plain; charset=utf-8')
             .send(result);
     }
