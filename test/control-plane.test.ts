@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { before, after, beforeEach, test } from 'node:test';
-import { readFile } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import pg from 'pg';
+import { prepareDatabase } from '../deploy/db-setup.ts';
 import { buildApp } from '../src/app.ts';
 import { AccessError } from '../src/access/error.ts';
 import { CreateUserUseCase } from '../src/access/useCases/createUser/createUser.useCase.ts';
@@ -25,13 +25,13 @@ import { GetProfileReadinessUseCase } from '../src/nodes/useCases/getProfileRead
 import { SynchronizeUseCase } from '../src/nodes/useCases/synchronize/synchronize.useCase.ts';
 import { GetConfigurationsUseCase } from '../src/delivery/useCases/getConfigurations/getConfigurations.useCase.ts';
 
-const db = new pg.Pool({ user: 'postgres', database: 'postgres' });
+const db = new pg.Pool({ user: 'postgres', database: 'uhuru' });
 const database = {
     host: process.env.PGHOST,
     port: Number(process.env.PGPORT),
     user: 'uhuru',
     password: process.env.TEST_DATABASE_PASSWORD,
-    database: 'postgres',
+    database: 'uhuru',
 };
 const pool = new pg.Pool(database);
 const nodesRepository = new NodesRepository(pool);
@@ -146,11 +146,7 @@ async function dropResponse(path: string, payload?: unknown, auth = authorizatio
 }
 
 before(async () => {
-    await db.query(await readFile(new URL('../schema.sql', import.meta.url), 'utf8'));
-    const grants = await readFile(new URL('../deploy/app-role.sql', import.meta.url), 'utf8');
-    await db.query(grants.replaceAll('DATABASE uhuru', 'DATABASE postgres'));
-    await db.query(`ALTER ROLE uhuru PASSWORD ${pg.escapeLiteral(process.env.TEST_DATABASE_PASSWORD!)}`);
-
+    await prepareDatabase(process.env.TEST_DATABASE_PASSWORD);
     await startApp();
 });
 
@@ -162,6 +158,11 @@ after(async () => {
     await app?.close();
     await pool.end();
     await db.end();
+    const admin = new pg.Client({ user: 'postgres', database: 'postgres' });
+    await admin.connect();
+    await admin.query('DROP DATABASE IF EXISTS uhuru WITH (FORCE)');
+    await admin.query('DROP ROLE IF EXISTS uhuru');
+    await admin.end();
 });
 
 test('a shared repository keeps pool writes and rolls back writes through options.tx', async () => {

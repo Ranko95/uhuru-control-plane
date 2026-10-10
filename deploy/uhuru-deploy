@@ -155,8 +155,10 @@ else
     exit 0
   fi
 
+  git -C "$repo" diff --quiet --diff-filter=DMRT "$old" "$sha" -- migrations \
+    || fail 'migration_changed: add a new migration instead of changing existing files'
   if [[ "${3:-}" != --schema-reviewed ]]; then
-    git -C "$repo" diff --quiet "$old" "$sha" -- '*.sql' \
+    git -C "$repo" diff --quiet "$old" "$sha" -- '*.sql' ':!migrations/**' \
       || fail 'schema_changed: update the database separately, then deploy with --schema-reviewed'
   fi
   if [[ "$sha" == "$old" ]]; then
@@ -183,6 +185,11 @@ else
     printf 'Skipped superseded commit %s\n' "$sha"
     exit 0
   fi
+
+  printf 'Migrating database for %s\n' "$sha"
+  runuser -u postgres -- env -i PATH="$PATH" PGHOST=/var/run/postgresql PGPORT=5432 PGUSER=postgres \
+    node "$releases/$sha/deploy/db-setup.ts" 9>&- </dev/null \
+    || fail migration_failed
 fi
 
 printf '%s\n' "$old" > "$state/pending"

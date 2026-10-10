@@ -123,21 +123,31 @@ For an existing VPS, follow [the configuration transition guide](docs/node-confi
 
 ### PostgreSQL in Docker
 
-Для локальной проверки в Docker (Compose 2.23.1+) запустите:
+Для локальной проверки в Docker запустите:
 
 ```sh
-docker compose -f docker-compose.local.yml up -d --wait
+npm ci --ignore-scripts
+npm run db:prepare
 cp deploy/local.example.json config/local.json
 ```
 
-Compose поднимает только PostgreSQL на `127.0.0.1:5432`, создаёт БД `uhuru`,
-схему и ограниченную роль приложения `uhuru` с паролем `uhuru-local-only`.
-В `config/local.json` укажите этот пароль в `database.password`, отдельный
+`db:prepare` поднимает PostgreSQL через локальный Compose на `127.0.0.1:5432`,
+ждёт его готовности и запускает `deploy/db-setup.ts` с реквизитами `postgres` из Compose.
+Скрипт создаёт недостающую БД `uhuru`, применяет миграции из `migrations` (первая из них
+создаёт ограниченную роль приложения `uhuru`) и задаёт роли локальный пароль `uhuru`,
+если пароля ещё нет. Повторный запуск сохраняет данные и пароль роли и применяет только
+новые миграции. Команда предназначена только для локального Compose.
+
+Миграции — единственный источник схемы и прав роли приложения, включая тесты и стенд.
+Новая миграция создаётся командой `npm run db:migration -- add_something`: появляется
+файл `migrations/<UTC-метка>_add-something.sql`, в который записывается SQL после
+`-- Up Migration`. Откат `down` не используется.
+
+В `config/local.json` укажите `uhuru` в `database.password`, отдельный
 `admin_password` длиной не менее 16 символов и `origin: "https://localhost"`.
 Остальные параметры БД из `config/default.json` уже подходят. Приложение запускается на хосте:
 
 ```sh
-npm ci --ignore-scripts
 chmod 600 config/local.json
 ulimit -c 0
 npm start
@@ -147,8 +157,10 @@ HTTP API доступен на `127.0.0.1:8080`. Для проверки ссы�
 нужен отдельный TLS-прокси. Пароли Compose предназначены только для локальных
 тестовых данных; порт 5432 должен быть свободен.
 
-Схема и ограниченная роль приложения создаются только при первом запуске пустой БД.
-Повторный запуск сохраняет данные в volume. Остановить БД можно командой:
+Повторный запуск сохраняет данные в volume. Старый volume с уже созданной схемой
+автоматически не переводится на миграции: первоначальные миграции рассчитаны на
+пустую БД. Для существующих данных нужен отдельный переход с фиксацией начальной
+версии схемы. Остановить БД можно командой:
 
 ```sh
 docker compose -f docker-compose.local.yml down
@@ -164,11 +176,14 @@ Run the PostgreSQL setup commands as a cluster administrator (the Homebrew user,
 Create a fresh development database once:
 
 ```sh
-createdb uhuru
-psql -X -v ON_ERROR_STOP=1 -d uhuru -f schema.sql
-psql -X -v ON_ERROR_STOP=1 -d uhuru -f deploy/app-role.sql
+PGHOST=/tmp node deploy/db-setup.ts </dev/null
 psql -X -d postgres -c "SET password_encryption = 'scram-sha-256'" -c '\password uhuru'
 ```
+
+Set `PGHOST` to the cluster's Unix socket directory: usually `/tmp` on Homebrew
+or `/var/run/postgresql` on Debian/Ubuntu. The script creates the `uhuru` database, applies
+the migrations (the first one creates the restricted `uhuru` role) and leaves the role password
+unset; `\password` then sets it interactively. Rerunning the script applies only new migrations.
 
 Add `host uhuru uhuru 127.0.0.1/32 scram-sha-256` before other matching rules in `pg_hba.conf`
 (find it with `psql -X -At -d postgres -c 'SHOW hba_file'`), then reload with
@@ -213,15 +228,14 @@ useradd --system --user-group --no-create-home --shell /usr/sbin/nologin uhuru
 install -d -o root -g uhuru -m 0750 /etc/uhuru
 # From /opt/uhuru:
 npm ci --omit=dev --ignore-scripts
-runuser -u postgres -- createdb uhuru
-runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f schema.sql
-runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f deploy/app-role.sql
 install -m 0644 deploy/uhuru-control-plane.service /etc/systemd/system/
 install -m 0755 deploy/check-runtime.sh /usr/local/sbin/uhuru-check-runtime
+install -m 0755 deploy/setup-database.sh /usr/local/sbin/uhuru-setup-database
 ```
 
-These SQL files are a one-time fresh installation, never a startup reset or a
-restore procedure. The database remains owned by `postgres`; the service role
+Schema changes, including fresh test and stand setup, are applied through `deploy/db-setup.ts`
+(`node-pg-migrate` as a library).
+The database remains owned by `postgres`; the service role
 cannot delete records or change Profile credentials, owners or `first_profile_id`.
 Use `host uhuru uhuru 127.0.0.1/32 scram-sha-256` before other matching rules in `pg_hba.conf`.
 Keep local peer authentication for PostgreSQL administration. PostgreSQL listens only on
@@ -230,8 +244,8 @@ Keep local peer authentication for PostgreSQL administration. PostgreSQL listens
 
 Before loading secrets, install [the PostgreSQL logging settings](deploy/postgresql-secrets.conf)
 in the dedicated cluster's included configuration directory and restart that cluster.
-The settings also enable `password_encryption = 'scram-sha-256'`. Assign the role password with
-`runuser -u postgres -- psql -X -d postgres -c '\password uhuru'`, then reload `pg_hba.conf`.
+The settings also enable `password_encryption = 'scram-sha-256'`. Reload `pg_hba.conf`
+after configuring application access.
 Disable any extension, audit collector or platform collector that records statements,
 parameters or process memory. Suppressing parameter logs alone does not suppress
 constraint error details; the configuration also suppresses ordinary server errors
@@ -252,6 +266,21 @@ The merged `database` object contains `host`, `port`, `user`, `password`, `datab
 use `127.0.0.1:5432`, role `uhuru` and database `uhuru` on the dedicated VPS. Use root:`uhuru`
 0640 for the settings. The systemd unit loads `/opt/uhuru/config` and `/etc/uhuru`
 through `NODE_CONFIG_DIR`; the external local file overrides shared defaults.
+After configuring PostgreSQL logging and creating the protected settings file, prepare the database:
+
+```sh
+/usr/local/sbin/uhuru-setup-database
+```
+
+The installer creates the missing database and runs migrations as `postgres` through the
+local Unix socket; the first migration creates the application role. The role password comes
+from `database.password` in `/etc/uhuru/local.json`, read by the `uhuru` user and passed to
+`postgres` only through a pipe, and is set only when the role has none.
+Repeating the installer preserves existing data and the role password.
+It requires the existing OS users `uhuru` and `postgres` and installed npm dependencies.
+For an existing database without migration history, follow the
+[migration transition](docs/database-migrations.ru.md) before running the installer or enabling automatic migrations.
+
 The application listens on HTTP `127.0.0.1:8080` only;
 nginx terminates public HTTPS on port 443. It does not trust forwarded headers.
 Install [the nginx site](deploy/uhuru-control-plane.nginx.conf) with a public certificate,

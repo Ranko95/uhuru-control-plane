@@ -37,7 +37,7 @@ jobs:
             - run: npm test
             - name: Check deployment scripts
               run: |
-                  bash -n deploy/uhuru-deploy deploy/setup-autodeploy.sh
+                  bash -n deploy/uhuru-deploy deploy/setup-autodeploy.sh deploy/setup-database.sh
                   sh -n deploy/check-runtime.sh test/run.sh
                   python3 test/deploy_test.py
             - name: Deploy the checked commit

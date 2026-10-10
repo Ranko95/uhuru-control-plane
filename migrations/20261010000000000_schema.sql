@@ -1,4 +1,10 @@
-BEGIN;
+-- Up Migration
+-- Transactions are managed by node-pg-migrate. The application role password is set by deploy/db-setup.ts.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'uhuru') THEN
+    CREATE ROLE uhuru LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  END IF;
+END $$;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 CREATE TABLE users (
   id uuid PRIMARY KEY,
@@ -54,4 +60,15 @@ RETURNS TABLE(profile_id uuid, vless_uuid uuid) LANGUAGE sql STABLE AS $$
   ORDER BY p.id
 $$;
 REVOKE ALL ON FUNCTION active_profiles(timestamptz) FROM PUBLIC;
-COMMIT;
+REVOKE ALL ON DATABASE uhuru FROM PUBLIC;
+GRANT CONNECT ON DATABASE uhuru TO uhuru;
+GRANT USAGE ON SCHEMA public TO uhuru;
+GRANT SELECT ON users, access_profiles, subscriptions, service_settings, nodes, node_sync TO uhuru;
+GRANT INSERT ON users, access_profiles, subscriptions, nodes, node_sync TO uhuru;
+-- FOR UPDATE also requires an UPDATE privilege; immutable columns are never granted.
+GRANT UPDATE(label) ON users TO uhuru;
+GRANT UPDATE(price_kopecks) ON service_settings TO uhuru;
+GRANT UPDATE(agent_secret_hash) ON nodes TO uhuru;
+GRANT UPDATE(desired_snapshot, sent_snapshot, confirmed_snapshot, confirmed_at,
+             last_seen_at, last_received_report) ON node_sync TO uhuru;
+GRANT EXECUTE ON FUNCTION active_profiles(timestamptz) TO uhuru;

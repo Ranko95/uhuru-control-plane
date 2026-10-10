@@ -16,17 +16,26 @@ useradd --system --user-group --no-create-home --shell /usr/sbin/nologin uhuru
 install -d -o root -g uhuru -m 0750 /etc/uhuru
 cd /opt/uhuru
 npm ci --omit=dev --ignore-scripts
-runuser -u postgres -- createdb uhuru
-runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f schema.sql
-runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d uhuru -f deploy/app-role.sql
 install -o root -g uhuru -m 0640 deploy/local.example.json /etc/uhuru/local.json
 install -m 0644 deploy/uhuru-control-plane.service /etc/systemd/system/
 install -m 0755 deploy/check-runtime.sh /usr/local/sbin/uhuru-check-runtime
+install -m 0755 deploy/setup-database.sh /usr/local/sbin/uhuru-setup-database
 ```
 
-SQL-команды предназначены только для **новой** базы, не для повторного запуска или восстановления. В `/etc/uhuru/local.json` установите `origin` равным `https://control.uhuru.pro` и замените `admin_password` и `database.password` на разные уникальные случайные пароли из менеджера секретов. Поля `database.host`, `database.port`, `database.user`, `database.database` наследуются из `config/default.json`: `127.0.0.1`, `5432`, `uhuru`, `uhuru`. Не записывайте пароли в аргументы команд, историю shell или журналы. По умолчанию `port` равен `8080`; приложение принудительно слушает только `127.0.0.1`. Поля `tls_cert`, `tls_key` и `listen_host` для нового развёртывания не нужны: сертификат принадлежит nginx.
+В `/etc/uhuru/local.json` установите `origin` равным `https://control.uhuru.pro` и замените `admin_password` и `database.password` на разные уникальные случайные пароли из менеджера секретов. Поля `database.host`, `database.port`, `database.user`, `database.database` наследуются из `config/default.json`: `127.0.0.1`, `5432`, `uhuru`, `uhuru`. Не записывайте пароли в аргументы команд, историю shell или журналы. По умолчанию `port` равен `8080`; приложение принудительно слушает только `127.0.0.1`. Поля `tls_cert`, `tls_key` и `listen_host` для нового развёртывания не нужны: сертификат принадлежит nginx.
 
-Для приложения добавьте в начало `pg_hba.conf` правило `host uhuru uhuru 127.0.0.1/32 scram-sha-256`; локальные peer-правила для администрирования сохраните. Установите `deploy/postgresql-secrets.conf` по README и перезапустите кластер: PostgreSQL должен слушать только `127.0.0.1:5432`. Задайте пароль роли интерактивно через `runuser -u postgres -- psql -X -d postgres -c '\password uhuru'` и внесите тот же пароль в `database.password`.
+Для приложения добавьте в начало `pg_hba.conf` правило `host uhuru uhuru 127.0.0.1/32 scram-sha-256`; локальные peer-правила для администрирования сохраните. Установите `deploy/postgresql-secrets.conf` по README и перезапустите кластер: PostgreSQL должен слушать только `127.0.0.1:5432`.
+
+После настройки журналов и защищённого конфига подготовьте БД:
+
+```sh
+/usr/local/sbin/uhuru-setup-database
+```
+
+Скрипт создаёт недостающие БД и роль, берёт пароль новой роли из `database.password`
+и применяет миграции через `postgres` с peer-аутентификацией. Повторный запуск
+сохраняет данные и пароль существующей роли. Для существующей БД без истории
+сначала выполните [переход на миграции](database-migrations.ru.md).
 
 ## Сертификат и nginx
 

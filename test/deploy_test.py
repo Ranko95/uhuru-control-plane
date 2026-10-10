@@ -62,8 +62,16 @@ elif name == 'mv':
     paths = [a for a in args if not a.startswith('-')]
     os.replace(*paths)
 elif name == 'runuser':
-    assert args[:3] == ['-u', 'uhuru-build', '--']
-    sys.exit(subprocess.call(args[3:]))
+    if args[:3] == ['-u', 'uhuru-build', '--']:
+        sys.exit(subprocess.call(args[3:]))
+    assert args[:5] == ['-u', 'postgres', '--', 'env', '-i']
+    assert 'PGHOST=/var/run/postgresql' in args and 'PGUSER=postgres' in args
+    target = pathlib.Path(args[-1]).parents[1]
+    assert args[args.index('node'):] == ['node', str(target / 'deploy/db-setup.ts')]
+    assert sys.stdin.read() == ''
+    with (root / 'migration_calls').open('a') as out:
+        out.write(json.dumps({'release': target.name, 'current': sha}) + '\n')
+    sys.exit(1 if os.environ.get('MIGRATION_FAIL') else 0)
 elif name == 'npm':
     assert '--ignore-scripts' in args and '--omit=dev' in args
     if os.environ.get('NPM_FAIL'):
@@ -186,6 +194,8 @@ class DeploymentTest(unittest.TestCase):
         subprocess.run(['git', 'init', '-q', '--bare', str(self.remote)], check=True)
         self.git('remote', 'add', 'origin', str(self.remote))
         (self.repo / 'schema.sql').write_text('initial schema\n')
+        (self.repo / 'migrations').mkdir()
+        (self.repo / 'migrations/0001_initial.sql').write_text('SELECT 1;\n')
         (self.repo / '.gitignore').write_text('node_modules/\n')
         self.old = self.commit('old')
         self.new = self.commit('new')
@@ -241,7 +251,55 @@ class DeploymentTest(unittest.TestCase):
         self.assertTrue((self.releases / self.old).is_dir())
         self.assertTrue((self.releases / self.new / 'node_modules/installed').is_file())
         self.assertFalse((self.state / 'pending').exists())
-        self.assertEqual(len(self.calls('runuser')), 1)
+        self.assertEqual(len(self.calls('runuser')), 2)
+        migrations = [json.loads(line) for line in (self.root / 'migration_calls').read_text().splitlines()]
+        self.assertEqual(migrations, [{'release': self.new, 'current': self.old}])
+
+    def test_migration_failure_leaves_old_service_untouched(self):
+        result = self.run_deploy('apply', self.new, MIGRATION_FAIL='1')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('migration_failed', result.stderr)
+        self.assertEqual(self.current.resolve().name, self.old)
+        self.assertEqual(self.calls('systemctl'), [])
+        self.assertFalse((self.state / 'pending').exists())
+        self.assertFalse((self.state / 'previous').exists())
+
+    def test_new_migrations_are_applied_without_manual_sql_override(self):
+        (self.repo / 'migrations/0002_next.sql').write_text('SELECT 2;\n')
+        sha = self.commit('new migration')
+        result = self.run_deploy('apply', sha)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.current.resolve().name, sha)
+
+    def test_legacy_sql_can_move_into_a_new_migration_after_review(self):
+        (self.repo / 'schema.sql').rename(self.repo / 'migrations/0002_legacy.sql')
+        sha = self.commit('move legacy SQL into migrations')
+        result = self.run_deploy('apply', sha, '--schema-reviewed')
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.current.resolve().name, sha)
+
+    def test_existing_migrations_cannot_be_changed_deleted_or_renamed(self):
+        path = self.repo / 'migrations/0001_initial.sql'
+        path.write_text('SELECT 2;\n')
+        changed = self.commit('change migration')
+        path.unlink()
+        deleted = self.commit('delete migration')
+        self.git('checkout', '-q', self.old, '--', 'migrations')
+        path.rename(self.repo / 'migrations/0002_renamed.sql')
+        renamed = self.commit('rename migration')
+
+        for sha in [changed, deleted, renamed]:
+            self.git('push', '-q', 'origin', sha + ':main', '--force')
+            with self.subTest(sha=sha):
+                result = self.run_deploy('apply', sha, '--schema-reviewed')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('migration_changed', result.stderr)
+                self.assertEqual(self.current.resolve().name, self.old)
+
+        self.assertEqual(self.calls('runuser'), [])
 
     def test_dependency_failure_leaves_old_service_untouched(self):
         result = self.run_deploy('apply', self.new, NPM_FAIL='1')

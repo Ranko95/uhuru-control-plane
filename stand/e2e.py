@@ -44,14 +44,7 @@ def main():
     hba = Path('/etc/postgresql')/version/'main/pg_hba.conf'
     hba.write_text('host uhuru uhuru 127.0.0.1/32 scram-sha-256\n' + hba.read_text())
     command(['systemctl', 'restart', f'postgresql@{version}-main'])
-    command(['runuser', '-u', 'postgres', '--', 'createdb', 'uhuru'])
-    for script in ['/opt/uhuru/schema.sql', '/opt/uhuru/deploy/app-role.sql']:
-        command(['runuser', '-u', 'postgres', '--', 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-d', 'uhuru', '-f', script])
     database_password = os.urandom(32).hex()
-    result = subprocess.run(
-        ['runuser', '-u', 'postgres', '--', 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-d', 'uhuru'],
-        input=f"ALTER ROLE uhuru PASSWORD '{database_password}';".encode(), capture_output=True, timeout=10)
-    check(result.returncode == 0, 'database_password_setup')
     uid = int(command(['id', '-u', 'uhuru']).stdout)
     gid = int(command(['id', '-g', 'uhuru']).stdout)
     Path('/etc/uhuru').mkdir(mode=0o750)
@@ -66,6 +59,7 @@ def main():
         admin_password=password,
     )
     write(Path('/etc/uhuru/local.json'), cp_settings, gid=gid)
+    command(['bash', '/opt/uhuru/deploy/setup-database.sh'])
     command(['systemctl', 'start', 'uhuru-control-plane'])
 
     def loopback_only():
@@ -463,7 +457,7 @@ def main():
 
         check(re.search(r'Max core file size\s+0\s+0\s+', limits), 'core_limit')
     source = hashlib.sha256()
-    for file in sorted([*Path('/opt/uhuru/src').rglob('*.ts'), Path('/opt/uhuru/schema.sql'), Path('/opt/uhuru/package-lock.json')]):
+    for file in sorted([*Path('/opt/uhuru/src').rglob('*.ts'), *Path('/opt/uhuru/migrations').glob('*.sql'), Path('/opt/uhuru/package-lock.json')]):
         source.update(str(file.relative_to('/opt/uhuru')).encode() + b'\0' + file.read_bytes() + b'\0')
     result = dict(
         status='PASS',

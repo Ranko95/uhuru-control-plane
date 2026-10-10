@@ -13,7 +13,8 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test": "sh test/run.sh",
-    "db:migrate": "node-pg-migrate"
+    "db:prepare": "docker compose -f docker-compose.local.yml up -d --wait && echo uhuru | PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=uhuru node deploy/db-setup.ts",
+    "db:migration:create": "node-pg-migrate create --migration-file-language sql --migration-filename-format utc"
   },
   "dependencies": {
     "config": "5.0.1",
