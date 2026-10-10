@@ -19,10 +19,13 @@
     sudo -u postgres psql -X -d postgres -c '\password uhuru'
     ```
 
-5. В `/etc/uhuru/settings.json` добавьте `database` из нового примера с этим паролем.
+5. В `/etc/uhuru/settings.json` добавьте `database` с полями `host: "127.0.0.1"`,
+   `port: 5432`, `user: "uhuru"`, `database: "uhuru"`, `maxPoolSize: 10` и этим `password`.
    На период отката оставьте также старое `database_socket`: старая версия читает его,
    новая — объект `database`. Сохраните `640 root:uhuru`; пароль не передавайте в аргументах команд и не выводите.
-6. Из проверенного checkout установите проверку среды и новый unit:
+6. Если целевая версия уже использует node-config, выполните также
+   [переход конфигурации](node-config-transition.ru.md) перед установкой нового unit.
+   Из проверенного checkout установите проверку среды и новый unit:
 
     ```sh
     sudo install -m 0755 deploy/check-runtime.sh /usr/local/sbin/uhuru-check-runtime

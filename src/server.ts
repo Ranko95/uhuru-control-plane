@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import pg from 'pg';
 
 import { buildApp } from './app.ts';
@@ -14,14 +14,27 @@ process.on('uncaughtException', fatal);
 process.on('unhandledRejection', fatal);
 
 try {
-    const path = process.argv[2];
+    // Load inside the catch boundary: parser errors can contain secret values.
+    const { default: config } = await import('config');
 
-    if (!path || ((await stat(path)).mode & 0o037) !== 0) {
-        throw new Error('private_settings_required');
+    for (const source of config.util.getConfigSources()) {
+        const parsed = source.parsed as { admin_password?: unknown; database?: { password?: unknown } };
+
+        if (parsed?.admin_password !== undefined || parsed?.database?.password !== undefined) {
+            if (((await stat(source.name)).mode & 0o037) !== 0) {
+                throw new Error('private_settings_required');
+            }
+        }
     }
 
-    const settings = JSON.parse(await readFile(path, 'utf8'));
-    const database = settings.database;
+    const database = config.get<{
+        host: string;
+        port: number;
+        user: string;
+        password: string;
+        database: string;
+        maxPoolSize: number;
+    }>('database');
 
     if (
         !database ||
@@ -43,7 +56,9 @@ try {
         throw new Error('invalid_database_settings');
     }
 
-    if (settings.listen_host && settings.listen_host !== '127.0.0.1') {
+    const listenHost = config.has('listen_host') ? config.get<string>('listen_host') : undefined;
+
+    if (listenHost && listenHost !== '127.0.0.1') {
         throw new Error('loopback_required');
     }
 
@@ -70,9 +85,9 @@ try {
 
     const app = buildApp({
         pool,
-        origin: settings.origin,
-        adminUsername: settings.admin_username,
-        adminPassword: settings.admin_password,
+        origin: config.get<string>('origin'),
+        adminUsername: config.get<string>('admin_username'),
+        adminPassword: config.get<string>('admin_password'),
     });
 
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -86,7 +101,7 @@ try {
 
     await app.listen({
         host: '127.0.0.1',
-        port: settings.port ?? 8080,
+        port: config.get<number>('port'),
     });
 
     process.stdout.write('control_plane_started\n');

@@ -8,7 +8,8 @@ User=uhuru
 Group=uhuru
 WorkingDirectory=/opt/uhuru
 ExecStartPre=/usr/local/sbin/uhuru-check-runtime
-ExecStart=/usr/local/bin/node /opt/uhuru/src/server.ts /etc/uhuru/settings.json
+Environment=NODE_CONFIG_DIR=/opt/uhuru/config:/etc/uhuru
+ExecStart=/usr/local/bin/node /opt/uhuru/src/server.ts
 UMask=0077
 LimitCORE=0
 NoNewPrivileges=true

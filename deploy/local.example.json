@@ -1,0 +1,7 @@
+{
+    "origin": "https://control.example.com",
+    "database": {
+        "password": "REPLACE_WITH_A_RANDOM_DATABASE_PASSWORD"
+    },
+    "admin_password": "REPLACE_WITH_A_RANDOM_PASSWORD"
+}

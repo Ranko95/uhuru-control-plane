@@ -24,7 +24,7 @@ ssh-keygen -l -f "$1" >/dev/null
 systemctl is-active --quiet uhuru-control-plane.service
 test -x /usr/local/bin/node
 test -f "$source_dir/uhuru-deploy"
-test -f /etc/uhuru/settings.json
+test -f /etc/uhuru/local.json
 
 for tool in useradd visudo runuser systemd-run npm git flock ssh-keygen sshd; do
   command -v "$tool" >/dev/null || {

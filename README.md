@@ -107,6 +107,58 @@ The native Node test runner accepts filters, e.g. `npm test -- --test-name-patte
 
 ## Run locally on macOS or Linux
 
+### Application configuration
+
+Application settings use [node-config](https://github.com/node-config/node-config/wiki/Configuration-Files).
+`config/default.json` contains shared values: HTTP port `8080`, database `127.0.0.1:5432`,
+role/database `uhuru`, pool size `10`, and admin username `admin`.
+Set the HTTPS `origin` and separate database/admin passwords in the ignored `config/local.json`,
+using [the local example](deploy/local.example.json). Passwords have no defaults.
+Environment-specific files such as `config/production.json` override defaults when
+`NODE_ENV=production`; local files override those values. Use `NODE_CONFIG_DIR` to select
+external config directories. Keep secrets in protected files, never environment variables or argv.
+Every loaded file containing `database.password` or `admin_password` must have mode `0600`
+or `0640` (read-only service group). Invalid settings fail startup without logging their values.
+For an existing VPS, follow [the configuration transition guide](docs/node-config-transition.ru.md).
+
+### PostgreSQL in Docker
+
+Для локальной проверки в Docker (Compose 2.23.1+) запустите:
+
+```sh
+docker compose -f docker-compose.local.yml up -d --wait
+cp deploy/local.example.json config/local.json
+```
+
+Compose поднимает только PostgreSQL на `127.0.0.1:5432`, создаёт БД `uhuru`,
+схему и ограниченную роль приложения `uhuru` с паролем `uhuru-local-only`.
+В `config/local.json` укажите этот пароль в `database.password`, отдельный
+`admin_password` длиной не менее 16 символов и `origin: "https://localhost"`.
+Остальные параметры БД из `config/default.json` уже подходят. Приложение запускается на хосте:
+
+```sh
+npm ci --ignore-scripts
+chmod 600 config/local.json
+ulimit -c 0
+npm start
+```
+
+HTTP API доступен на `127.0.0.1:8080`. Для проверки ссылок подписки по HTTPS
+нужен отдельный TLS-прокси. Пароли Compose предназначены только для локальных
+тестовых данных; порт 5432 должен быть свободен.
+
+Схема и ограниченная роль приложения создаются только при первом запуске пустой БД.
+Повторный запуск сохраняет данные в volume. Остановить БД можно командой:
+
+```sh
+docker compose -f docker-compose.local.yml down
+```
+
+Для полного сброса тестовых данных добавьте `--volumes` к `down`.
+Этот Compose не заменяет `npm test` и агентский stand.
+
+### Without Docker
+
 Use Node.js 24.11+ and a local PostgreSQL 15+ (Homebrew PostgreSQL 18 is detected by the test runner).
 Run the PostgreSQL setup commands as a cluster administrator (the Homebrew user, or `postgres` on Linux).
 Create a fresh development database once:
@@ -121,13 +173,13 @@ psql -X -d postgres -c "SET password_encryption = 'scram-sha-256'" -c '\password
 Add `host uhuru uhuru 127.0.0.1/32 scram-sha-256` before other matching rules in `pg_hba.conf`
 (find it with `psql -X -At -d postgres -c 'SHOW hba_file'`), then reload with
 `psql -X -d postgres -c 'SELECT pg_reload_conf()'`.
-Copy `deploy/settings.example.json` to the ignored `settings.json`, enter the database password
+Copy `deploy/local.example.json` to the ignored `config/local.json`, enter the database password
 and a separate admin password, set `origin` to `https://localhost`, and run:
 
 ```sh
-chmod 600 settings.json
+chmod 600 config/local.json
 ulimit -c 0
-npm start -- settings.json
+npm start
 ```
 
 The local HTTP API listens on `127.0.0.1:8080`; no nginx or systemd is needed for local API work.
@@ -193,12 +245,14 @@ prerequisites are absent through the unit's `ExecStartPre` check; the applicatio
 refuses a privileged database role. Review the same policy
 for the separate Node Agent/Xray services.
 
-Create `/etc/uhuru/settings.json` from [the example](deploy/settings.example.json),
+Create `/etc/uhuru/local.json` from [the example](deploy/local.example.json),
 with separate unique random database/admin passwords and the final HTTPS origin.
-The `database` object contains `host`, `port`, `user`, `password`, `database` and `maxPoolSize`, all required.
-`maxPoolSize` is a positive integer limiting the number of connections in the pool; the example uses `10`;
+The merged `database` object contains `host`, `port`, `user`, `password`, `database` and `maxPoolSize`, all required.
+`maxPoolSize` is a positive integer limiting the number of connections in the pool; the default is `10`;
 use `127.0.0.1:5432`, role `uhuru` and database `uhuru` on the dedicated VPS. Use root:`uhuru`
-0640 for the settings. The application listens on HTTP `127.0.0.1:8080` only;
+0640 for the settings. The systemd unit loads `/opt/uhuru/config` and `/etc/uhuru`
+through `NODE_CONFIG_DIR`; the external local file overrides shared defaults.
+The application listens on HTTP `127.0.0.1:8080` only;
 nginx terminates public HTTPS on port 443. It does not trust forwarded headers.
 Install [the nginx site](deploy/uhuru-control-plane.nginx.conf) with a public certificate,
 then start:

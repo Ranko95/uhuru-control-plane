@@ -4,3 +4,4 @@ target
 *.pem
 *.key
 settings.json
+config/local*

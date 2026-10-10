@@ -10,6 +10,7 @@ WORKDIR /opt/uhuru
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY src ./src
+COPY config ./config
 COPY schema.sql ./schema.sql
 COPY deploy ./deploy
 COPY stand/e2e.py /control-plane-e2e.py

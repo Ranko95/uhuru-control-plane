@@ -1,0 +1,11 @@
+{
+    "port": 8080,
+    "database": {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "user": "uhuru",
+        "database": "uhuru",
+        "maxPoolSize": 10
+    },
+    "admin_username": "admin"
+}

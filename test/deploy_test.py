@@ -364,7 +364,7 @@ class DeploymentTest(unittest.TestCase):
         self.current.unlink()
         (self.releases / self.old).rmdir()
         self.repo.rename(self.current)
-        settings = self.root / 'etc/uhuru/settings.json'
+        settings = self.root / 'etc/uhuru/local.json'
         settings.parent.mkdir(parents=True)
         settings.write_text('existing secret settings')
         settings.chmod(0o640)

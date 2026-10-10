@@ -65,7 +65,7 @@ def main():
         admin_username='admin',
         admin_password=password,
     )
-    write(Path('/etc/uhuru/settings.json'), cp_settings, gid=gid)
+    write(Path('/etc/uhuru/local.json'), cp_settings, gid=gid)
     command(['systemctl', 'start', 'uhuru-control-plane'])
 
     def loopback_only():
